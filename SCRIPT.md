@@ -1,16 +1,19 @@
 # Making Time Uncertainty a First-Class Concept in Linux Timing — Speaking Script
 
-Full spoken script for the 34-slide deck
+Full spoken script for the 40-slide deck
 (`time-uncertainty-error-bar.pptx`). Written to run **~40 minutes** at a calm
 pace (~135 words/min). Timing cues are cumulative. Text in *(parentheses italics)*
 is stage direction, not spoken.
 
 Delivery notes:
 - Pause at every `[PAUSE]`. Silence sells the interval idea.
-- The three anchor lines to land hard: **"unknown, not wrong"** (slide 10),
-  **the formula** (slide 21), and **"sync aligns, uncertainty qualifies"** (slide 29).
-- If you are running long, cut the second half of slide 30 and skip slide 5's
-  last sub-point. Do not cut the staleness slide (17) or the formula (21).
+- The anchor lines to land hard: **"unknown, not wrong"** (slide 10),
+  **the formula** (slide 22), **Meta's Window of Uncertainty** (slide 29), the
+  **sawtooth capture** (slide 31), and **"fast time, plus its error bar"**
+  (slide 35).
+- If you are running long, cut the second half of slide 36 and skip slide 5's
+  last sub-point. Do not cut the staleness slide (18), the formula (22), the Meta
+  validation (29), or the sawtooth capture (31) — they are the proof of the thesis.
 
 ---
 
@@ -54,20 +57,23 @@ where the events looked out of order? [PAUSE] Right. That's the whole talk.
 
 ### Slide 3 — Two talks, one story  (1:45)
 
-You may have seen — or will see — the companion talk on profiling AI clusters.
-It's worth drawing the line between the two, because they're two halves of the
-same story.
+Some of you saw my talk last year, where I introduced fast access to the PTP
+hardware clock — the Hermóðr proof of concept, which approximates the device clock
+in userspace from the CPU counter, so you don't pay the syscall and PCIe cost on
+every read. It took a `/dev/ptpX` read from around five microseconds down to tens
+of nanoseconds. It's worth drawing the line between the two talks, because they're
+two halves of the same story.
 
-That talk asks: *how do we align events across nodes?* It's about PTP
-synchronizing a whole cluster so timestamps mean the same thing everywhere. It's
-"can I trace this workload?"
+That talk asked: *how do we get the time fast?* How do we read the clock without
+the overhead that dominates a naive `clock_gettime` on a device clock.
 
-This talk asks a narrower, sharper question: *what is the error bar on a single
-timestamp?* It's "can I trust this ordering — yes or no?"
+This talk asks the complementary question: *once I have that time, how far can I
+trust it?* What is the error bar on the timestamp I just read.
 
-Here's the relationship in one sentence: **synchronization gives you alignment;
-uncertainty tells you the limits of that alignment.** Hold onto that. I'll come
-back to it at the end.
+Here's the relationship in one sentence: **the prior talk made the read fast; this
+one puts an error bar on it.** Fast access to the time, and its associated
+uncertainty — together, that's the full story. Hold onto that. I'll come back to
+it at the end.
 
 ---
 
@@ -203,9 +209,35 @@ uncomfortable part: only *some* of them expose a metric you can read. "The event
 time" means something different at each layer — even when everything reports as
 perfectly synced.
 
-Let me pull out the ones that matter most.
+But first, the whole budget on one slide.
 
-### Slide 14 — Layers 1–2: hardware & sync offset  (14:45)
+### Slide 14 — The uncertainty budget: every source  (14:15)
+
+Before we zoom into the layers one by one, here is every source of error that can
+widen your interval, grouped four ways.
+
+Two come from the *source clock* itself: the grandmaster's *class* — its
+`clockClass` and `clockAccuracy` — and the grandmaster's own residual time error.
+Both reach us folded into `offsetFromMaster` and `stepsRemoved`. [PAUSE]
+
+Two come from *our* oscillator: its free-run *drift* between sync messages, and,
+in the extreme, *holdover* — the drift that keeps accumulating when discipline is
+lost entirely.
+
+Two are about *reading* the clock: the *read delay* — the latency of actually
+reading a PHC or calling `clock_gettime` — and the clock's *resolution*, the
+granularity of the tick itself.
+
+And two live in the *network*: the delays *accumulated across every path element*
+— each transparent or boundary clock and every queue on the way — and *link
+asymmetry*, where the up and down directions differ. [PAUSE]
+
+Watch the last column. Some of these we fold straight into the bound; PTP
+*compensates* the mean path delay for us; and one — link asymmetry — PTP simply
+cannot see, so it stays a conservative gap. Now let me pull out the ones that
+dominate.
+
+### Slide 15 — Layers 1–2: hardware & sync offset  (14:45)
 
 The oscillator first. Its stability is measured in parts per billion, and it's
 sensitive to temperature. Even reading the hardware clock has a latency.
@@ -219,7 +251,7 @@ The servo *converges* toward zero offset. It never mathematically *reaches* zero
 So PTP believes something about your clock — and that belief is an input to *U*,
 not a guarantee about reality.
 
-### Slide 15 — Layer 4: where was the timestamp taken?  (16:00)
+### Slide 16 — Layer 4: where was the timestamp taken?  (16:00)
 
 Now the capture point, because this one surprises people.
 
@@ -233,13 +265,16 @@ This matters enormously for profiling. Your GPU, your NIC, and your CPU may each
 be stamping in a *different domain* — even when the cluster says everything is
 synchronized.
 
-### Slide 16 — Layers 3 & 5: network and kernel path  (17:15)
+### Slide 17 — Layers 3 & 5: network and kernel path  (17:15)
 
 Two more layers, quickly.
 
-The network: remember `meanPathDelay` is a *mean*. It is not a constant.
-Congestion spikes it. On AI fabrics you get asymmetric up and down links and
-queueing on a leaf switch — the delay moves around under you.
+The network: here's a subtlety that trips people up. PTP *measures* the mean path
+delay and *compensates* for it inside the offset — so the mean itself is not
+uncertainty; it's already corrected out. What's left is path *asymmetry*: when the
+up and down directions differ, on AI fabrics with asymmetric links and leaf-switch
+queueing. That residual is a real source, but we don't get a clean measurement of
+it, so it stays out of the bound.
 
 And the kernel: Linux actually exposes a lot of useful data here — but not as one
 tidy package. `PTP_SYS_OFFSET` cross-timestamps the PHC against the system clock.
@@ -247,7 +282,7 @@ tidy package. `PTP_SYS_OFFSET` cross-timestamps the PHC against the system clock
 API gives you offset, delay, and ingress time. The ingredients are all there.
 Remember that — I'll come back to what's *missing* at the end.
 
-### Slide 17 — The layer everyone forgets: staleness  (18:30)
+### Slide 18 — The layer everyone forgets: staleness  (18:30)
 
 And now the layer that almost every tool forgets. [PAUSE]
 
@@ -269,11 +304,11 @@ later in this talk makes explicit.
 
 ## Block 5 — Turning PTP into a bound  (21:00 – 27:00)
 
-### Slide 18 — Part 4: Turning PTP state into a bound  (21:00)
+### Slide 19 — Part 4: Turning PTP state into a bound  (21:00)
 
 Part four. Let's turn all of this into an actual number we can compute.
 
-### Slide 19 — PTP answers: what does the protocol believe?  (21:15)
+### Slide 20 — PTP answers: what does the protocol believe?  (21:15)
 
 PTP answers exactly one question for us: *what does the protocol believe about my
 clock?* We read that belief from four datasets, all through `ptp4l`.
@@ -286,7 +321,7 @@ Linux extension — gives the sync ingress time and the grandmaster identity. An
 What PTP does *not* answer is "what is my application-level timestamp error bar?"
 That's the part we build on top.
 
-### Slide 20 — Ingress time is the drift anchor  (22:30)
+### Slide 21 — Ingress time is the drift anchor  (22:30)
 
 And this is how we build it. The key is that ingress time.
 
@@ -300,27 +335,30 @@ billion. [PAUSE]
 That's the mechanism that makes staleness concrete. Uncertainty grows between sync
 messages — even when the offset number on the screen is sitting perfectly flat.
 
-### Slide 21 — The formula  (23:45)
+### Slide 22 — The formula  (23:45)
 
 So here is the whole model on one slide.
 
-**Total uncertainty equals the absolute offset, plus the absolute path delay, plus
-the drift.** [PAUSE]
+**Total uncertainty equals the absolute offset plus the drift.** [PAUSE]
 
-Three terms. The offset — how far PTP thinks we are from the master. The path
-delay — the asymmetry component. And the drift — the staleness since the last
-sync.
+Two terms. The offset — how far PTP thinks we are from the master. And the drift —
+the staleness since the last sync.
 
-A worked number: offset of 80 nanoseconds, delay of 120, drift of 50 — total 250
-nanoseconds. That 250 is the half-width of the interval you attach to your
-timestamp.
+Now, you might expect path delay in here. It's not, and that's deliberate. PTP
+already *measures* the mean path delay and *compensates* for it inside the offset.
+If I added it back, I'd be counting it twice. What's genuinely left is path
+*asymmetry* — the up and down directions differing — and that's real, but PTP
+doesn't hand it to us, so I leave it out and stay conservative about it.
+
+A worked number: offset of 80 nanoseconds, drift of 50 — total 130 nanoseconds.
+That 130 is the half-width of the interval you attach to your timestamp.
 
 I want to be honest about what this is: it's a *practical* model. It is not a full
 Allan-deviation analysis of your oscillator. It's a conservative, computable bound
 built from the data PTP actually gives us — and that's exactly what makes it
 usable in production.
 
-### Slide 22 — Sync status is a prerequisite, not a proof  (25:15)
+### Slide 23 — Sync status is a prerequisite, not a proof  (25:15)
 
 One more piece before we build it: the port state gates whether the bound even
 means anything.
@@ -338,12 +376,12 @@ status is a *prerequisite* for trust — it is never a *proof* of it.
 
 ## Block 6 — A model implementation  (27:00 – 34:00)
 
-### Slide 23 — Part 5: A model implementation  (27:00)
+### Slide 24 — Part 5: A model implementation  (27:00)
 
 Part five. Let's make it something you can actually run. This is `ptp-uncertainty`
 — a small daemon and a client library.
 
-### Slide 24 — Architecture  (27:15)
+### Slide 25 — Architecture  (27:15)
 
 The shape is deliberately simple.
 
@@ -360,7 +398,7 @@ Two design choices worth calling out: applications need *no* PTP code and *no*
 direct PHC access. And they get a *live* bound, extrapolated to now — not just the
 last stale offset snapshot.
 
-### Slide 25 — What the daemon collects  (28:45)
+### Slide 26 — What the daemon collects  (28:45)
 
 Concretely, the daemon collects offset, delay, and steps removed from
 `CURRENT_DATA_SET`; the port state and sync interval from `PORT_DATA_SET`; the
@@ -371,7 +409,7 @@ A couple of niceties: it can derive its poll interval automatically from the syn
 interval — polling at least twice the sync rate — and it can autodetect the PHC
 index. You point it at the socket and it configures itself.
 
-### Slide 26 — Client API  (29:45)
+### Slide 27 — Client API  (29:45)
 
 The client side is four calls.
 
@@ -387,7 +425,7 @@ snapshot* — how long since the daemon last updated shared memory. That is *not
 the same as the drift term, which is measured from the sync ingress anchor. Two
 different clocks of staleness; keep them separate.
 
-### Slide 27 — Behavior under failure = explicit correctness  (31:00)
+### Slide 28 — Behavior under failure = explicit correctness  (31:00)
 
 And this slide is really the whole thesis in code.
 
@@ -404,62 +442,151 @@ It's three lines. The application, not the clock, decides what "trustworthy
 enough" means for its own job — and the daemon's only responsibility is to keep
 the bound honest.
 
-*(Optional live demo here, ~3 min: run `watch_uncertainty`, disturb `ptp4l`, show
-`ptp4l_connected=0` with total uncertainty climbing, then the CSV plot. Have a
-pre-recorded plot ready — conference Wi-Fi rarely carries clean PTP.)*
+### Slide 29 — Validated at scale: Meta's fbclock  (32:30)
+
+And before I show you my own numbers, I want to prove this isn't a fringe idea.
+
+Meta deployed exactly this model to a fleet of PTP clients. Their API is called
+fbclock, and it does not return a timestamp — it returns a *Window of
+Uncertainty*: an earliest and a latest. The same interval we've been building all
+talk. [PAUSE]
+
+Look at the two columns. Independently, they arrived at the same skeleton: a
+daemon that reads `ptp4l` and the PHC, publishes a snapshot into shared memory,
+and a small C library that clients link. Same architecture, down to the shared
+memory.
+
+Two honest differences, and they're the interesting part. First, the *bound*:
+Meta computes a statistical, sigma-based window and targets six-nines certainty; I
+default to a conservative worst-case bound. Both are defensible — two points on
+the same spectrum. Second, *holdover*: Meta estimates the drift rate empirically,
+from the recent history of the clock's frequency adjustments, and then calibrates
+it with temperature and vibration telemetry. I use a single configured drift
+bound. [PAUSE]
+
+Hold onto that second difference. Meta had to bring their own temperature and
+vibration data to estimate oscillator drift — because nothing in the stack hands
+it to you. That's not my opinion; that's the largest PTP deployment in the world
+telling you what's missing. We come back to it in the last section.
 
 ---
 
-## Block 7 — Payoff: AI cluster profiling  (34:00 – 38:00)
+## Block 7 — Measured on real oscillators  (33:00 – 37:00)
 
-### Slide 28 — Part 6: Payoff: profiling AI clusters  (34:00)
+### Slide 30 — Part 6: Measured on real oscillators  (33:00)
 
-Part six. Why does any of this matter at scale? This is where the two talks meet.
+Part six. Everything so far has been a model. Let me show you the model running
+against real hardware — because this is the part that turns "staleness" from a
+slide into a number you can see move.
 
-### Slide 29 — The bridge  (34:15)
+Everything from here is captured with the `watch_uncertainty` tool logging the
+daemon against a live `ptp4l`. Same host, same network. The only thing I change
+between runs is the worst-case drift bound — which is exactly how you'd model a
+better or worse oscillator.
+
+### Slide 31 — Staleness in action  (33:30)
+
+*(Show the sawtooth plot.)*
+
+Here it is. This is a real capture. That dashed line sitting almost on the axis is
+the offset floor — just tens of nanoseconds. Remember, PTP compensates the path
+delay, so it's gone; there's essentially nothing under the curve but offset.
+[PAUSE]
+
+Now watch the blue line. Every second, a sync message arrives, and the
+uncertainty snaps back down to essentially zero. Then, immediately, it starts
+climbing again — pure drift, because the clock is drifting and no correction has
+arrived yet. Climb, reset, climb, reset. [PAUSE]
+
+That sawtooth *is* staleness. Remember slide eighteen, where I claimed a perfect
+offset becomes a growing interval a moment later? There it is, measured. The
+interval is widest right before the next sync — and most tools would only ever
+show you the offset, which down here looks like nothing.
+
+### Slide 32 — Same PTP, four oscillators  (34:45)
+
+Now the same run, four times, one per oscillator class — and I've put it on a log
+scale, because the spread is enormous.
+
+Every one of these lines rides on the same tiny offset floor — tens of
+nanoseconds — because the path delay is compensated away. Same offset, same
+network. The only difference is the drift bound: an OCXO-class part down at
+100 parts per billion, a TCXO at 1 ppm, a standard crystal at 10 ppm, and a basic
+crystal at 100 ppm. [PAUSE]
+
+Look at the separation. The OCXO barely leaves the floor — its line stays down in
+the tens of nanoseconds. The basic crystal swings up past 100 microseconds between
+sync messages. Same protocol. Same second. The envelope of your uncertainty is set
+by the oscillator, not by PTP.
+
+### Slide 33 — The budget, at its worst  (35:45)
+
+One more view — the worst-case moment in each run, broken into its two parts: the
+residual offset in gray, and the drift term in color.
+
+For the OCXO, offset and drift are comparable — the whole budget is under three
+hundred nanoseconds either way. But move to a standard crystal and drift is
+*ninety-nine percent* of the budget; on the basic crystal it's essentially all
+drift. [PAUSE]
+
+Same network, same daemon, same formula — and the peak bound runs from about a
+third of a microsecond to a hundred and twenty microseconds, decided entirely by
+the crystal on the board. This is the single most important empirical point in the
+talk: between sync messages, oscillator holdover — not the protocol — decides
+whether your bound is a fraction of a microsecond or over a hundred. Hold that
+thought for the very last section, because it's exactly the number the kernel
+won't give you.
+
+---
+
+## Block 8 — The full story: fast time + its uncertainty  (37:00 – 39:30)
+
+### Slide 34 — Part 7: The full story: fast time + its uncertainty  (37:00)
+
+Part seven. This is where the two talks meet.
+
+### Slide 35 — The bridge  (37:15)
 
 Here's the bridge, and it's the second line I want you to remember.
 
-The companion talk shows that PTP *aligns* cross-node events — it puts every GPU,
-every NIC, every rank on a common timeline. That's real, and it's powerful.
+Last year's talk made reading the clock *fast* — the Hermóðr approximation gets
+you the device time in tens of nanoseconds instead of microseconds, without the
+syscall and PCIe overhead. That's real, and it's powerful. And notice it's built
+the same way this daemon is: a background process that cross-timestamps and
+estimates drift, a snapshot in shared memory, and a small client library.
 
-What uncertainty adds is this: **it tells you *when* that alignment can actually
-carry a causal claim.** [PAUSE]
+What this talk adds is the other half: **it puts an error bar on that time.** [PAUSE]
 
-Synchronization solves *alignment*. Uncertainty solves the *epistemic limits* of
-that alignment — the point past which "these two events line up" stops being
-evidence of anything.
+Fast access gives you the time cheaply. Uncertainty tells you how far to trust it.
+A timestamp you can read cheaply *and* trust explicitly — that's a complete time
+primitive, and it takes both halves to build it.
 
-### Slide 30 — 512-GPU trace: what bounds add  (35:15)
+### Slide 36 — Fast time + its uncertainty compose  (38:00)
 
-Make it concrete with a 512-GPU training run, fully PTP-synced.
+Make it concrete. A fast read alone gives you a low-overhead timestamp — that's
+the first row, and it's genuinely valuable. But on its own it's still just a
+point: you compare two events point-to-point, you can't tell when the order is
+ambiguous, and you can't gate a decision on how trustworthy the time is.
 
-The profiler sees rank 42 launch a kernel at time T, and rank 7 stall 300
-nanoseconds later. The tempting conclusion: the launch caused the stall. But if
-the uncertainty on each node is around 500 nanoseconds, that 300-nanosecond gap is
-*inside the error bars*. The ordering is ambiguous. "Launch caused stall" is
-false causality — and chasing it is wasted engineering time. [PAUSE]
+Two events 300 nanoseconds apart, each known to within about 500 nanoseconds — the
+fast read alone happily says "A before B." With the uncertainty bound, that
+ordering is honestly *ambiguous*, and the system knows it. [PAUSE]
 
-Look at the table. With sync alone you *can* align traces visually — that's the
-first row, and it's genuinely useful. But merging cross-node spans is fragile;
-bottleneck detection is heuristic; ordering disputes stay hidden; your merge
-windows are fixed guesses.
-
-Add the uncertainty bound and every one of those upgrades. Span merging becomes
-*confidence-gated*. Bottleneck claims become *defensible*. Ambiguity becomes
-*explicit* instead of buried. And your trace-correlation window can *adapt* to the
-live quality of synchronization — tight when the clocks are good, wider when
-they're drifting.
+Add uncertainty and every row upgrades. Point comparison becomes *interval*
+comparison. Ambiguity becomes *explicit* instead of buried. Decisions can be
+*gated* on a threshold over U. And any correlation or merge window can *adapt* to
+the live quality of the clock — tight when it's good, wider when it's drifting.
+That's fast time and its uncertainty, composed into one primitive.
 
 ---
 
-## Block 8 — Kernel APIs: have vs missing  (38:00 – 39:00)
+## Block 9 — Kernel APIs: have vs missing  (39:30 – 40:30)
 
-### Slide 31 — Part 7: Linux APIs — what we have, what we lack  (38:00)
+### Slide 37 — Part 8: Linux APIs — what we have, what we lack  (39:30)
 
-Part seven, and I'll keep it short and honest.
+Part eight, and I'll keep it short and honest.
 
-### Slide 32 — Ingredients, not the recipe  (38:10)
+### Slide 38 — Ingredients, not the recipe  (39:40)
 
 Linux gives us the ingredients. On the left: `SO_TIMESTAMPING` for hardware and
 software timestamps; `PTP_SYS_OFFSET` to cross-reference the PHC against the
@@ -475,14 +602,16 @@ discipline event" you can just query. [PAUSE]
 This is exactly the conclusion in my abstract: the *frequency offset* is
 available, but oscillator stability and calibration staleness are not. So a
 precise bound today still depends on operator configuration and hardware-specific
-knowledge. I'm not going to oversell the automation — the kernel gives you the
-ingredients, but you still have to bring part of the recipe.
+knowledge. And you just *saw* how much that missing term matters — the crystal
+alone drove the bound from a fraction of a microsecond to over a hundred. I'm not
+going to oversell the automation — the kernel gives you the ingredients, but you
+still have to bring part of the recipe.
 
 ---
 
-## Block 9 — Close  (39:00 – 40:00)
+## Block 10 — Close  (40:30 – 41:30)
 
-### Slide 33 — Takeaways  (39:00)
+### Slide 39 — Takeaways  (40:30)
 
 Five things to take with you.
 
@@ -497,10 +626,11 @@ Don't ignore it.
 Four: explicit bounds enable explicit correctness — for ordering *and* for
 compliance.
 
-And five, the one that ties the two talks together: for AI profiling,
-synchronization *aligns* your data, and uncertainty *qualifies* your causality.
+And five, the one that ties the two talks together: fast access gives you the
+time cheaply, and uncertainty tells you how far to trust it — fast access to the
+time *and* its associated uncertainty.
 
-### Slide 34 — Questions  (39:45)
+### Slide 40 — Questions  (41:15)
 
 So: treat time as an interval, and make the error bar part of the data.
 

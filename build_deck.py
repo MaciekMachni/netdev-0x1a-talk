@@ -37,6 +37,8 @@ FONT_MONO = "Consolas"
 SW = Inches(13.333)   # 16:9 widescreen
 SH = Inches(7.5)
 
+ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+
 
 # ----------------------------------------------------------------------------
 # Low-level helpers
@@ -203,6 +205,7 @@ def code_slide(prs, title, code_lines, idx, kicker=None, caption=None, notes="")
     tf.margin_bottom = Inches(0.2)
     for i, line in enumerate(code_lines):
         p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        p.alignment = PP_ALIGN.LEFT
         p.space_after = Pt(2)
         r = p.add_run()
         r.text = line if line else " "
@@ -225,8 +228,13 @@ def table_slide(prs, title, headers, rows, idx, kicker=None, notes=""):
     ncols = len(headers)
     nrows = len(rows) + 1
     left, top = Inches(0.7), Inches(1.8)
-    width, height = Inches(11.9), Inches(0.5) * nrows
+    avail = SH - top - Inches(0.5)          # keep clear of the footer bar
+    row_h = min(Inches(0.5), int(avail / nrows))
+    width, height = Inches(11.9), row_h * nrows
     gtbl = s.shapes.add_table(nrows, ncols, left, top, width, height).table
+    for _r in gtbl.rows:
+        _r.height = row_h
+    body_sz = 13.5 if nrows <= 8 else 12
     # header
     for c, htext in enumerate(headers):
         cell = gtbl.cell(0, c)
@@ -251,7 +259,7 @@ def table_slide(prs, title, headers, rows, idx, kicker=None, notes=""):
             p = cell.text_frame.paragraphs[0]
             p.word_wrap = True
             r = p.add_run(); r.text = val
-            r.font.size = Pt(13.5)
+            r.font.size = Pt(body_sz)
             r.font.color.rgb = INK if c == 0 else MUTED
             r.font.bold = (c == 0)
             r.font.name = FONT
@@ -283,6 +291,29 @@ def two_col_slide(prs, title, left_head, left_items, right_head, right_items,
     rp = [[R("\u2022  ", 15, True, ACCENT2), R(t, 15, False, INK)] for t in right_items]
     _text(s, rx + Inches(0.25), top + Inches(0.85), colw - Inches(0.5), Inches(3.6),
           rp, space_after=9)
+    _footer(s, idx)
+    if notes:
+        _notes(s, notes)
+    return s
+
+
+def image_slide(prs, image_path, idx, kicker=None, takeaway=None, notes=""):
+    """Full-width figure slide. The image carries its own title; a short kicker
+    sits on top and a one-line takeaway sits below."""
+    s = _blank(prs)
+    _set_bg(s, PAPER)
+    if kicker:
+        _rect(s, 0, Inches(0.18), Inches(0.18), Inches(0.55), ACCENT)
+        _text(s, Inches(0.55), Inches(0.24), Inches(12), Inches(0.4),
+              [[R(kicker.upper(), 13, True, ACCENT)]])
+    img_w = Inches(11.7)
+    img_h = Emu(int(img_w * 6.0 / 12.4))  # source figures are 12.4 x 6.0 in
+    img_x = Emu(int((SW - img_w) / 2))
+    img_y = Inches(0.82)
+    s.shapes.add_picture(image_path, img_x, img_y, width=img_w, height=img_h)
+    if takeaway:
+        _text(s, Inches(0.7), img_y + img_h + Inches(0.06), Inches(11.9), Inches(0.5),
+              [[R(takeaway, 15, True, INK)]], align=PP_ALIGN.CENTER)
     _footer(s, idx)
     if notes:
         _notes(s, notes)
@@ -323,16 +354,22 @@ def build(path):
         "This talk", ["What is the error bar on a timestamp?",
                       "Timestamps as intervals",
                       "Explicit correctness criteria",
-                      "\u201cCan I trust this ordering?\u201d"],
-        "Companion talk \u2014 AI profiling",
-        ["How do we align events across nodes?",
-         "PTP cluster synchronization",
-         "Cross-node event correlation",
-         "\u201cCan I trace this workload?\u201d"],
+                      "\u201cCan I trust this time?\u201d"],
+        "Prior talk \u2014 fast PHC access",
+        ["How do we read the clock cheaply?",
+         "PHC reads without syscall / PCIe overhead",
+         "Userspace PHC approximation (Herm\u00f3\u00f0r)",
+         "~5 \u00b5s syscall+PCIe read \u2192 ~60 ns"],
         3, kicker="Roadmap",
-        notes="Synchronization gives alignment; uncertainty tells you the limits "
-              "of that alignment. Position the AI talk as 'why time matters at "
-              "scale'; this talk is 'why synchronized time alone is not enough.'")
+        notes="The prior talk made reading the PTP hardware clock cheap \u2014 the "
+              "Herm\u00f3\u00f0r PoC approximates the device clock in userspace from the CPU "
+              "counter, cutting a /dev/ptpX read from ~5 microseconds (syscall + "
+              "PCIe) down to tens of nanoseconds. Note the shape: a daemon that "
+              "cross-timestamps and estimates drift, a snapshot in shared memory, "
+              "and a small client library \u2014 the same skeleton as ptp-uncertainty. "
+              "This talk adds the missing half: the uncertainty of that time. "
+              "Together they are the full story \u2014 fast access to the time and its "
+              "associated error bar.")
 
     # ---- PART 1 ----
     section_slide(prs, "Part 1", "Precise is not the same as correct", 4)
@@ -351,14 +388,26 @@ def build(path):
 
     # 6
     table_slide(
-        prs, "Three ways timestamps quietly mislead",
+        prs, "Ways timestamps quietly mislead",
         ["Domain", "Naive claim", "What can go wrong"],
-        [["Ordering", "A before B", "Intervals overlap \u2192 order is unknown"],
-         ["Causality", "A caused B", "Off-by-one across nodes \u2192 false cause"],
-         ["Compliance", "Log is ordered", "Cannot prove ordering is defensible"]],
+        [["Ordering", "A before B", "intervals overlap \u2192 order is unknown"],
+         ["Causality", "A caused B", "off-by-one across nodes \u2192 false cause"],
+         ["Compliance", "log is ordered", "cannot prove ordering is defensible"],
+         ["Consistency", "commit A visible before B", "overlap breaks external consistency"],
+         ["Profiling", "span A nested in span B", "cross-node spans misorder"],
+         ["Leases / locks", "lease expired before regrant", "overlap \u2192 split brain / two leaders"],
+         ["Telemetry", "counters sampled together", "inter-node skew \u2192 phantom correlations"],
+         ["Forensics", "log A caused log B", "causal chain is indefensible"],
+         ["Sensor fusion", "radar + camera aligned", "physical-world misalignment"],
+         ["Finance", "trade timestamped correctly", "can't prove mandated window (MiFID II)"]],
         6, kicker="The problem",
-        notes="Compliance angle from the abstract: auditors care about defensible "
-              "ordering, not nanosecond vanity metrics.")
+        notes="Draft with the full menu of use cases \u2014 trim during review. The core "
+              "three (ordering, causality, compliance) carry the argument; the rest "
+              "map the blast radius: databases (external consistency / commit-wait), "
+              "profiling (cross-node spans), coordination (leases \u2192 split brain), "
+              "observability (telemetry skew), audit/forensics, cyber-physical "
+              "(sensor fusion), and regulated timestamping (MiFID II). Auditors care "
+              "about defensible ordering, not nanosecond vanity metrics.")
 
     # 7
     statement_slide(
@@ -384,23 +433,59 @@ def build(path):
         9, kicker="The model",
         notes="This is the core thesis of the abstract. Keep returning to it.")
 
-    # 10 — ordering rule (code-style)
-    code_slide(
-        prs, "The ordering rule",
-        ["  Point model              Interval model",
-         "",
-         "      |                        [----*----]",
-         "      t                    t-U      t     t+U",
-         "",
-         "",
-         "  A is before B   ONLY IF   t_A + U_A  <  t_B - U_B",
-         "",
-         "  otherwise  ->  AMBIGUOUS   (unknown, not wrong)"],
-        10, kicker="The model",
-        caption="The overlap region is where causality cannot be resolved from "
-                "timestamps alone.",
-        notes="Draw this on a whiteboard if possible. 'Unknown' is a valid, "
-               "useful answer a system can act on.")
+    # 10 — ordering rule (drawn diagram, not ASCII art)
+    s = _blank(prs)
+    _set_bg(s, PAPER)
+    _header(s, "The ordering rule", "The model")
+
+    pnl_y, pnl_h = Inches(1.75), Inches(2.55)
+    _rect(s, Inches(0.7), pnl_y, Inches(5.75), pnl_h, LIGHT)
+    _rect(s, Inches(6.88), pnl_y, Inches(5.75), pnl_h, RGBColor(0xEA, 0xF7, 0xF5))
+    _text(s, Inches(0.95), pnl_y + Inches(0.16), Inches(5.3), Inches(0.4),
+          [[R("Point model", 16, True, MUTED)]])
+    _text(s, Inches(7.13), pnl_y + Inches(0.16), Inches(5.3), Inches(0.4),
+          [[R("Interval model", 16, True, ACCENT2)]])
+
+    base_y = pnl_y + Inches(1.45)
+    tick_h = Inches(0.56)
+    # point model: baseline + single tick at t
+    _rect(s, Inches(1.25), base_y, Inches(4.65), Pt(2.5), MUTED)
+    _rect(s, Inches(3.55), int(base_y - tick_h / 2), Pt(3.5), tick_h, INK)
+    _text(s, Inches(3.15), base_y + Inches(0.34), Inches(0.8), Inches(0.4),
+          [[R("t", 16, True, INK)]], align=PP_ALIGN.CENTER)
+
+    # interval model: baseline + bar [t-U, t+U] + centre tick
+    _rect(s, Inches(7.4), base_y, Inches(4.85), Pt(2.5), MUTED)
+    bar_x, bar_w = Inches(8.95), Inches(2.3)
+    _rect(s, bar_x, int(base_y - Inches(0.12)), bar_w, Inches(0.24), ACCENT)
+    _rect(s, bar_x, int(base_y - tick_h / 2), Pt(3.5), tick_h, ACCENT)
+    _rect(s, int(bar_x + bar_w - Pt(3.5)), int(base_y - tick_h / 2), Pt(3.5), tick_h, ACCENT)
+    _rect(s, int(bar_x + bar_w / 2), int(base_y - tick_h / 2 - Inches(0.05)),
+          Pt(3.5), int(tick_h + Inches(0.1)), INK)
+    _text(s, int(bar_x - Inches(0.55)), base_y + Inches(0.34), Inches(1.1), Inches(0.4),
+          [[R("t\u2212U", 14, True, ACCENT)]], align=PP_ALIGN.CENTER)
+    _text(s, int(bar_x + bar_w / 2 - Inches(0.4)), base_y + Inches(0.34), Inches(0.8), Inches(0.4),
+          [[R("t", 14, True, INK)]], align=PP_ALIGN.CENTER)
+    _text(s, int(bar_x + bar_w - Inches(0.55)), base_y + Inches(0.34), Inches(1.1), Inches(0.4),
+          [[R("t+U", 14, True, ACCENT)]], align=PP_ALIGN.CENTER)
+
+    # the rule band
+    rule_y = Inches(4.6)
+    _rect(s, Inches(0.7), rule_y, Inches(11.93), Inches(1.35), INK)
+    _text(s, Inches(0.7), rule_y + Inches(0.22), Inches(11.93), Inches(0.6),
+          [[R("A before B   only if   tA + UA  <  tB \u2212 UB", 26, True, WHITE, FONT_MONO)]],
+          align=PP_ALIGN.CENTER)
+    _text(s, Inches(0.7), rule_y + Inches(0.82), Inches(11.93), Inches(0.45),
+          [[R("otherwise \u2192 ambiguous  \u00b7  unknown, not wrong", 18, False,
+              RGBColor(0x8F, 0xE0, 0xD6), FONT, True)]],
+          align=PP_ALIGN.CENTER)
+
+    _text(s, Inches(0.72), Inches(6.12), Inches(11.9), Inches(0.5),
+          [[R("The overlap region is where causality cannot be resolved from "
+              "timestamps alone.", 15, False, MUTED, FONT, True)]])
+    _footer(s, 10)
+    _notes(s, "Draw this on a whiteboard if possible. 'Unknown' is a valid, "
+              "useful answer a system can act on.")
 
     # 11 — is / is not
     two_col_slide(
@@ -434,7 +519,47 @@ def build(path):
         notes="Walk slowly. The point: 'the event time' means different things at "
               "different layers even when everything is 'synced'.")
 
-    # 14 — offset & delay
+    # 14 — the full budget of sources
+    table_slide(
+        prs, "The uncertainty budget: every source",
+        ["Source of error", "What it contributes", "In the bound?"],
+        [["Grandmaster class & its own error",
+          "GM clockClass / accuracy + the GM\u2019s time error",
+          "via |offset| (steps removed)"],
+         ["Local oscillator drift",
+          "free-run drift between syncs (ppb\u2013ppm)",
+          "yes \u2014 drift term"],
+         ["Holdover",
+          "drift with no discipline (ptp4l down)",
+          "yes \u2014 anchor held, drift grows"],
+         ["Clock read delays",
+          "latency to read the PHC / clock_gettime",
+          "partial \u2014 capture-point dependent"],
+         ["Clock resolution",
+          "granularity of the timestamp tick",
+          "bounded by tick size"],
+         ["Accumulated path-element delays",
+          "residence + queueing over each hop",
+          "compensated by PTP (mean)"],
+         ["Link asymmetry",
+          "up and down paths differ",
+          "unmodeled \u2014 conservative gap"]],
+        14, kicker="Anatomy",
+        notes="A consolidated budget before we zoom into individual layers. Two "
+              "sources come from the source clock itself: the grandmaster's class "
+              "(clockClass / clockAccuracy) and its own residual time error \u2014 both "
+              "reach us folded into offsetFromMaster and stepsRemoved. Two come "
+              "from our local oscillator: its free-run drift between sync messages, "
+              "and holdover when discipline is lost entirely. Two are properties of "
+              "reading the clock: the access latency of a PHC or clock_gettime "
+              "read, and the finite resolution of the tick itself. And two live in "
+              "the network: the delays accumulated across every transparent/"
+              "boundary clock and queue on the path (whose mean PTP measures and "
+              "compensates), and link asymmetry \u2014 the up/down difference PTP cannot "
+              "see, which stays an unmodeled conservative gap. The rest of Part 3 "
+              "drills into the ones that dominate.")
+
+    # 15 — offset & delay
     content_slide(
         prs, "Layers 1\u20132: hardware & sync offset",
         [("Oscillator: TCXO/OCXO stability (ppb), temperature sensitivity, PHC read latency", 0),
@@ -443,35 +568,38 @@ def build(path):
          ("meanPathDelay \u2014 path-asymmetry estimate", 1),
          ("stepsRemoved \u2014 distance from the grandmaster", 1),
          ("The servo converges; it never mathematically reaches zero", 0)],
-        14, kicker="Anatomy",
+        15, kicker="Anatomy",
         notes="PTP believes something about your clock. That belief is an input to "
               "U, not a guarantee.")
 
-    # 15 — capture point table
+    # 16 — capture point table
     table_slide(
         prs, "Layer 4: where was the timestamp taken?",
         ["Method", "Typical error", "Notes"],
         [["PHC hardware RX timestamp", "smallest", "needs NIC/driver support"],
          ["SO_TIMESTAMPING (software)", "larger", "IRQ + softirq delay"],
          ["clock_gettime() in app", "largest", "syscall + scheduling jitter"]],
-        15, kicker="Anatomy",
+        16, kicker="Anatomy",
         notes="Critical for profiling: GPU, NIC and CPU may live in different "
               "timestamp domains even when 'synced'.")
 
-    # 16 — kernel path
+    # 17 — kernel path
     content_slide(
         prs, "Layers 3 & 5: network and kernel path",
-        [("meanPathDelay is a mean \u2014 not a constant; congestion spikes it", 0),
-         ("AI fabrics: asymmetric up/down links, leaf-switch queueing", 1),
+        [("PTP compensates the mean path delay \u2014 so it is not in the bound", 0),
+         ("Residual risk is path asymmetry (up/down differ) \u2014 unmodeled today", 1),
          ("Linux exposes useful data \u2014 but not as one package:", 0),
          ("PTP_SYS_OFFSET / _EXTENDED \u2014 PHC vs system clock", 1),
          ("SO_TIMESTAMPING \u2014 ingress / egress timestamps", 1),
          ("ptp4l management API \u2014 offset, delay, ingress time", 1)],
-        16, kicker="Anatomy",
-        notes="Foreshadow the kernel-gaps section: ingredients exist, the single "
-              "'current uncertainty' API does not.")
+        17, kicker="Anatomy",
+        notes="Mean path delay is measured and compensated by PTP, so it does not "
+              "belong in the uncertainty bound; only the residual up/down asymmetry "
+              "does, and we do not get a clean measurement of it. Foreshadow the "
+              "kernel-gaps section: ingredients exist, the single 'current "
+              "uncertainty' API does not.")
 
-    # 17 — staleness (the big one)
+    # 18 — staleness (the big one)
     code_slide(
         prs, "Layer that everyone forgets: staleness",
         ["  Between PTP updates, the clock drifts.",
@@ -482,16 +610,16 @@ def build(path):
          "",
          "  A perfect offset at sync ingress still becomes",
          "  a GROWING interval a moment later."],
-        17, kicker="Anatomy",
+        18, kicker="Anatomy",
         caption="Staleness turns a point sync measurement into a growing interval "
                 "\u2014 this is what the model daemon implements.",
         notes="Many tools show offset but never show the interval growing since "
               "the last correction. This is the term the daemon makes explicit.")
 
     # ---- PART 4 ----
-    section_slide(prs, "Part 4", "Turning PTP state into a bound", 18)
+    section_slide(prs, "Part 4", "Turning PTP state into a bound", 19)
 
-    # 19 — datasets
+    # 20 — datasets
     table_slide(
         prs, "PTP answers: what does the protocol believe?",
         ["Dataset (via ptp4l)", "Provides"],
@@ -499,11 +627,11 @@ def build(path):
          ["PORT_DATA_SET", "port state, logSyncInterval"],
          ["TIME_STATUS_NP", "sync ingress time, grandmaster identity"],
          ["PORT_HWCLOCK_NP", "PHC index (optional)"]],
-        19, kicker="PTP \u2192 bound",
+        20, kicker="PTP \u2192 bound",
         notes="PTP does NOT answer 'what is my application-level timestamp error "
               "bar?'. We build that on top.")
 
-    # 20 — ingress anchor
+    # 21 — ingress anchor
     code_slide(
         prs, "Ingress time is the drift anchor",
         ["  TIME_STATUS_NP.ingress_time",
@@ -514,20 +642,22 @@ def build(path):
          "",
          "  Uncertainty grows between sync messages",
          "  even when the offset display looks flat."],
-        20, kicker="PTP \u2192 bound",
+        21, kicker="PTP \u2192 bound",
         notes="This makes 'staleness' concrete: anchor at ingress, extrapolate at "
               "read time using a worst-case drift bound.")
 
-    # 21 — the formula
+    # 22 — the formula
     statement_slide(
         prs,
-        "total_uncertainty_ns = |offset| + |path_delay| + drift",
-        "Example: offset 80 ns + delay 120 ns + drift 50 ns  =  250 ns bound.",
-        21,
-        notes="This is the exact formula the library computes. Honest: it is a "
-              "practical model, not a full Allan-deviation analysis.")
+        "total_uncertainty_ns = |offset| + drift",
+        "Mean path delay is compensated by PTP, so it is excluded.  Example: 80 ns offset + 50 ns drift = 130 ns bound.",
+        22,
+        notes="PTP measures and compensates the mean path delay inside the offset, "
+              "so adding it back would double-count. The residual path-asymmetry "
+              "term is real but unmodeled here \u2014 a known conservative gap. This is "
+              "a practical model, not a full Allan-deviation analysis.")
 
-    # 22 — port state trust
+    # 23 — port state trust
     table_slide(
         prs, "Sync status is a prerequisite, not a proof",
         ["Port state", "Meaning for uncertainty"],
@@ -535,14 +665,14 @@ def build(path):
          ["UNCALIBRATED", "converging \u2014 bounds unstable"],
          ["LISTENING / FAULTY", "do not trust ordering claims"],
          ["ptp4l disconnected", "hold last anchor + drift keeps growing"]],
-        22, kicker="PTP \u2192 bound",
+        23, kicker="PTP \u2192 bound",
         notes="'Synchronized' is necessary but not sufficient. The last row is the "
               "interesting failure mode the daemon handles explicitly.")
 
     # ---- PART 5 ----
-    section_slide(prs, "Part 5", "A model implementation: ptp-uncertainty", 23)
+    section_slide(prs, "Part 5", "A model implementation: ptp-uncertainty", 24)
 
-    # 24 — architecture
+    # 25 — architecture
     code_slide(
         prs, "Architecture",
         ["  ptp4l",
@@ -555,12 +685,12 @@ def build(path):
          "    |",
          "    v",
          "  applications       <- get a live bound, no PTP code needed"],
-        24, kicker="Implementation",
+        25, kicker="Implementation",
         caption="No direct PHC access required. A live bound, not just the last "
                 "offset snapshot.",
         notes="Transition from theory to something the audience can actually run.")
 
-    # 25 — what daemon collects
+    # 26 — what daemon collects
     table_slide(
         prs, "What the daemon collects",
         ["Field", "Source"],
@@ -568,11 +698,11 @@ def build(path):
          ["port state, sync interval", "PORT_DATA_SET"],
          ["ingress time, grandmaster id", "TIME_STATUS_NP"],
          ["PHC index (optional)", "PORT_HWCLOCK_NP"]],
-        25, kicker="Implementation",
+        26, kicker="Implementation",
         notes="Auto features: poll interval derived from logSyncInterval (>=2x "
               "sync rate); optional PHC index autodetection.")
 
-    # 26 — client API
+    # 27 — client API
     code_slide(
         prs, "Client API",
         ["  struct ptp_unc_handle *h = ptp_unc_open();",
@@ -586,13 +716,13 @@ def build(path):
          "  // u.age_ns  (snapshot freshness != drift anchor)",
          "",
          "  ptp_unc_close(h);"],
-        26, kicker="Implementation",
+        27, kicker="Implementation",
         caption="Clients extrapolate at read time; age_ns (snapshot freshness) is "
                 "distinct from the drift term.",
         notes="Clarify snapshot age vs drift \u2014 a common confusion and a good "
               "teaching moment.")
 
-    # 27 — failure behavior
+    # 28 — failure behavior
     code_slide(
         prs, "Behavior under failure = explicit correctness",
         ["  // ptp4l restarts or disconnects:",
@@ -603,40 +733,107 @@ def build(path):
          "  if (!u.ptp4l_connected ||",
          "      u.total_uncertainty_ns > threshold)",
          "      mark_event_ordering_untrusted();"],
-        27, kicker="Implementation",
+        28, kicker="Implementation",
         caption="The application decides what 'trustworthy enough' means \u2014 the "
                 "daemon just keeps the bound honest.",
         notes="This is the abstract's phrase 'evaluate temporal correctness "
               "explicitly' turned into three lines of code.")
 
+    # 29 — industry validation: Meta fbclock
+    two_col_slide(
+        prs, "You don\u2019t have to take my word for it: Meta\u2019s fbclock",
+        "Meta fbclock  (deployed at scale, 2022)",
+        ["Returns a Window of Uncertainty: [earliest_ns, latest_ns]",
+         "Go daemon reads ptp4l + PHC \u2192 shared memory \u2192 C library",
+         "Statistical k\u00b7\u03c3 window (Meta targets 6-nines certainty)",
+         "Holdover: drift from PHC freq-adjust history + temp/vibration telemetry"],
+        "ptp-uncertainty  (this talk)",
+        ["Returns total_uncertainty_ns \u2192 [t\u2212U, t+U]",
+         "ptp_unc_dmn reads ptp4l \u2192 /ptp_uncertainty SHM \u2192 libptp_unc.so",
+         "Conservative worst-case bound (layer stats on top if wanted)",
+         "Holdover: hold last anchor, drift grows at max_drift_ppb"],
+        29, kicker="Industry validation",
+        notes="The interval model is not academic. Meta's fbclock ships 'Window of "
+              "Uncertainty' [earliest, latest] to a fleet of PTP clients using the "
+              "same daemon+shmem+library shape this talk arrives at independently. "
+              "Two honest differences: (1) Meta computes a statistical sigma-based "
+              "window (M = clockaccuracy + |offset| + stddev(offset); W = mean(M) + "
+              "k*stddev(M), k->4), we default to a conservative worst-case bound; "
+              "(2) Meta estimates holdover drift empirically from PHC frequency-"
+              "adjustment history (1.5 * mean(|freqchange|)) plus temperature and "
+              "vibration telemetry, we use a configured max_drift_ppb. Same skeleton, "
+              "different knobs. Source: 'How Precision Time Protocol is being deployed "
+              "at Meta', Meta Engineering, 2022; github.com/facebook/time/fbclock.")
+
     # ---- PART 6 ----
-    section_slide(prs, "Part 6", "Payoff: profiling AI clusters", 28)
+    section_slide(prs, "Part 6", "Measured on real oscillators", 30)
 
-    # 29 — bridge
-    statement_slide(
-        prs,
-        "PTP aligns cross-node events. Uncertainty says when that alignment can carry a causal claim.",
-        "Synchronization solves alignment; uncertainty solves the epistemic limits of alignment.",
-        29,
-        notes="Explicit bridge to the companion talk. Speak to both audiences in "
-              "the room here.")
+    # 30 — staleness in action (sawtooth)
+    image_slide(
+        prs, os.path.join(ASSETS, "fig_sawtooth.png"), 31, kicker="Measured",
+        takeaway="A perfect sync becomes a growing interval within one second \u2014 "
+                 "this is the drift term, captured live.",
+        notes="Real capture from watch_uncertainty against a live ptp4l at 1 Hz "
+              "sync, 10 ppm drift bound. Mean path delay is compensated by PTP, so "
+              "the bound is |offset| + drift; the dashed line is the tiny |offset| "
+              "floor (tens of ns) and the sawtooth is staleness accumulating "
+              "between sync messages and resetting at each ingress. This is slide "
+              "17's claim, measured.")
 
-    # 30 — AI example + table
-    table_slide(
-        prs, "512-GPU trace: what bounds add",
-        ["Capability", "Sync only", "Sync + uncertainty"],
-        [["Align traces visually", "yes", "yes"],
-         ["Merge cross-node spans", "fragile", "confidence-gated"],
-         ["Detect bottlenecks", "heuristic", "defensible"],
-         ["Ordering disputes", "hidden", "explicit ambiguity"],
-         ["Trace-buffer / merge window", "fixed", "adapts to live U"]],
-        30, kicker="AI profiling",
-        notes="Scenario: rank-42 launch at T, rank-7 stall at T+300 ns. If U ~ 500 "
-              "ns on both, ordering is ambiguous \u2014 the 'launch caused stall' "
-              "conclusion is false causality and wasted engineering time.")
+    # 31 — oscillator comparison
+    image_slide(
+        prs, os.path.join(ASSETS, "fig_compare.png"), 32, kicker="Measured",
+        takeaway="Same PTP quality, four oscillator classes \u2014 the drift bound "
+                 "alone spans two orders of magnitude.",
+        notes="Every run has the same tiny |offset| floor (tens of ns) because path "
+              "delay is compensated by PTP. Only max_drift_ppb changes: 100 ppb "
+              "(OCXO), 1 ppm (TCXO), 10 ppm, 100 ppm. Log scale. The envelope is "
+              "set by staleness, not by PTP.")
+
+    # 32 — peak budget bars
+    image_slide(
+        prs, os.path.join(ASSETS, "fig_budget.png"), 33, kicker="Measured",
+        takeaway="Between sync messages, oscillator holdover \u2014 not PTP \u2014 "
+                 "decides whether your bound is 0.3 \u00b5s or 120 \u00b5s.",
+        notes="Peak-moment budget per class, as |offset| + drift. For the OCXO, "
+              "offset and drift are comparable (~0.3 us total); for the basic XO, "
+              "drift is essentially 100%. Same protocol, same network, the peak "
+              "bound runs from ~0.3 us to ~120 us from the crystal alone. This is "
+              "why oscillator stability must be part of the model and why the "
+              "kernel not exposing it (next section) is the real gap.")
 
     # ---- PART 7 ----
-    section_slide(prs, "Part 7", "Linux APIs: what we have, what we lack", 31)
+    section_slide(prs, "Part 7", "The full story: fast time + its uncertainty", 34)
+
+    # 35 — bridge
+    statement_slide(
+        prs,
+        "Fast access gives you the time cheaply. Uncertainty tells you how far to trust it.",
+        "The prior talk made the read fast; this one puts an error bar on it \u2014 fast time and its uncertainty, together.",
+        35,
+        notes="Explicit bridge to the prior fast-PHC-access talk (Herm\u00f3\u00f0r). Both "
+              "halves share a daemon + shared-memory + client-library shape and "
+              "compose into one primitive: a timestamp you can read cheaply \u2014 tens "
+              "of nanoseconds instead of microseconds \u2014 and trust explicitly.")
+
+    # 36 — the two halves compose
+    table_slide(
+        prs, "Fast time + its uncertainty compose",
+        ["Capability", "Fast read alone", "+ uncertainty"],
+        [["Low-overhead timestamp", "yes", "yes"],
+         ["Compare two events", "point compare", "interval compare"],
+         ["Know when order is ambiguous", "no", "explicit"],
+         ["Gate decisions on trust", "no", "threshold on U"],
+         ["Merge / correlation window", "fixed", "adapts to live U"]],
+        36, kicker="The full story",
+        notes="Fast reads (prior talk) and the uncertainty bound (this talk) are "
+              "two halves of one time primitive: read the clock cheaply, and know "
+              "how wrong it might be. Example: two events 300 ns apart, each U ~ "
+              "500 ns \u2014 the fast read alone says 'A before B'; with U the order is "
+              "honestly ambiguous.")
+
+    # ---- PART 8 ----
+    section_slide(prs, "Part 8", "Linux APIs: what we have, what we lack", 37)
 
     # 32 — have vs missing
     two_col_slide(
@@ -651,11 +848,16 @@ def build(path):
          "Calibration age + temperature model",
          "Per-read PHC access-latency bound",
          "A unified \u201cstaleness since last discipline\u201d"],
-        31 + 1, kicker="Kernel limits",
+        38, kicker="Kernel limits",
         notes="Matches the abstract's conclusion: frequency offset is available, "
               "but oscillator stability and calibration staleness are not \u2014 so "
               "precise bounds still need operator config and hardware knowledge. "
-              "Do not oversell automation.")
+              "The measurements just proved how much that missing oscillator term "
+              "matters. And Meta's fbclock is the existence proof: to run holdover "
+              "in production they estimate drift from PHC frequency-adjustment "
+              "history and calibrate it with temperature and vibration telemetry "
+              "\u2014 exactly the data the kernel does not hand you. Do not oversell "
+              "automation.")
 
     # ---- CLOSE ----
     content_slide(
@@ -664,8 +866,8 @@ def build(path):
          ("PTP provides inputs, not a complete uncertainty model", 0),
          ("Staleness / drift is the term most tools ignore \u2014 don\u2019t", 0),
          ("Explicit bounds enable explicit correctness for ordering & compliance", 0),
-         ("For AI profiling: sync aligns data, uncertainty qualifies causality", 0)],
-        33, kicker="Closing",
+         ("The full story: fast access to the time and its associated uncertainty", 0)],
+        39, kicker="Closing",
         notes="End on the bridge sentence: better profiles need better time \u2014 "
               "and better time needs error bars.")
 

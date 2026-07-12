@@ -28,15 +28,18 @@ bound.
 | 1 | Opening & hook | 3 min | 1–3 | Frame the problem; connect the two talks |
 | 2 | Precise ≠ correct | 5 min | 4–7 | Why better clocks created new blind spots |
 | 3 | Time as an interval | 5 min | 8–11 | The core mental model + ordering rule |
-| 4 | Anatomy of uncertainty | 8 min | 12–17 | Every layer that adds error, incl. staleness |
-| 5 | Turning PTP into a bound | 6 min | 18–22 | Datasets → formula → trust mapping |
-| 6 | A model implementation | 7 min | 23–27 | The `ptp-uncertainty` daemon + API + failure |
-| 7 | Payoff: AI cluster profiling | 4 min | 28–30 | Bridge to the companion talk |
-| 8 | Kernel APIs: have vs missing | 2 min | 31–32 | Honest limits; why manual config remains |
-| 9 | Takeaways & Q&A | ~ | 33–34 | Close and open the floor |
-| | **Total** | **~40 min** | **34 slides** | |
+| 4 | Anatomy of uncertainty | 7 min | 12–18 | Every source that adds error, incl. staleness |
+| 5 | Turning PTP into a bound | 6 min | 19–23 | Datasets → formula → trust mapping |
+| 6 | A model implementation | 6 min | 24–29 | The `ptp-uncertainty` daemon + API + failure + industry validation |
+| 7 | Measured on real oscillators | 4 min | 30–33 | Real captures: drift/staleness across crystals |
+| 8 | The full story: fast time + uncertainty | 3 min | 34–36 | Bridge to the prior fast-PHC-access talk |
+| 9 | Kernel APIs: have vs missing | 2 min | 37–38 | Honest limits; why manual config remains |
+| 10 | Takeaways & Q&A | ~ | 39–40 | Close and open the floor |
+| | **Total** | **~40 min** | **40 slides** | |
 
-Buffer: cut slide 30's second half or slide 35 (backup) if running long.
+Buffer: block 7 doubles as the (pre-recorded) demo — show one figure and move on
+if running long; cut slide 36's second half if needed. Do not cut the staleness
+slide (18), the formula (22), the Meta validation (29), or the sawtooth capture (31).
 
 ---
 
@@ -50,37 +53,63 @@ Buffer: cut slide 30's second half or slide 35 (backup) if running long.
    the intervals don't overlap; otherwise it is *unknown*, not *wrong*.
 4. **Anatomy** — Walk the stack. The most-ignored term is **staleness**: drift
    accumulated since the last synchronization event.
-5. **Mechanism** — PTP exposes offset, path delay, and an ingress anchor. Combine
-   them: `U = |offset| + |path_delay| + drift_since_ingress`.
+5. **Mechanism** — PTP exposes offset, path delay, and an ingress anchor. PTP
+   *compensates* the mean path delay, so the bound is `U = |offset| +
+   drift_since_ingress`; only the residual (unmodeled) path asymmetry is dropped.
 6. **Implementation** — `ptp_unc_dmn` polls `ptp4l`, publishes a snapshot through
    shared memory, and clients extrapolate a live bound at read time — surviving
    `ptp4l` restarts by holding the last anchor while drift keeps growing.
-7. **Payoff** — In AI clusters, PTP *aligns* cross-node events; uncertainty tells
-   you *when that alignment is trustworthy enough* to claim causality. This is the
-   explicit complement to the companion profiling talk.
+6.3. **Validation** — This isn't a fringe idea: Meta's `fbclock` ships the same
+   interval ("Window of Uncertainty" `[earliest, latest]`) with the same
+   daemon+shmem+library shape at fleet scale. Two honest differences: statistical
+   vs worst-case bound, and empirical drift+telemetry vs a configured drift bound.
+6.5. **Evidence** — Real captures from the daemon across four oscillator classes
+   (100 ppb / 1 ppm / 10 ppm / 100 ppm) show the sawtooth of staleness and prove
+   the drift term — not PTP — sets the uncertainty envelope (~0.3 µs → ~120 µs).
+7. **Payoff** — The prior talk made reading the clock *fast* (cheap userspace
+   access to the PHC, avoiding syscall/PCIe overhead); this talk puts an *error
+   bar* on that time. Together they are the full story: fast access to the time
+   and its associated uncertainty.
 8. **Limits** — Linux gives ingredients (SO_TIMESTAMPING, PTP_SYS_OFFSET, ptp4l
    mgmt), but not oscillator stability or calibration staleness — so precise
    bounds still need operator config and hardware knowledge.
 
 ---
 
-## Optional live demo (3–4 min, inside block 6)
+## Block 7 figures = the demo, pre-recorded
+
+Block 7 (slides 30–33) shows real captures instead of a live demo, so conference
+Wi-Fi cannot break it. The figures are regenerated from the CSVs in `../results`:
+
+```bash
+python3 make_figures.py          # -> assets/fig_sawtooth.png, fig_compare.png, fig_budget.png
+python3 build_deck.py            # embeds them into the .pptx
+```
+
+Data provenance (captured with `watch_uncertainty -raw`, same ptp4l + network,
+only `max_drift_ppb` varied to model each oscillator class):
+
+- `results/100ppb.csv` — OCXO-class, 100 ppb, peak ~0.3 µs (drift ~43%)
+- `results/1ppm.csv`   — TCXO-class, 1 ppm, peak ~1.3 µs (drift ~88%)
+- `results/10ppm.csv`  — Std. XO, 10 ppm, peak ~12 µs (drift ~99%)
+- `results/100ppm.csv` — Basic XO, 100 ppm, peak ~120 µs (drift ~100%)
+
+If you still want a live demo, keep the fallback ready:
 
 ```bash
 sudo ./bin/ptp_unc_dmn --ptp4l-socket /run/ptp4l -A -v
 ./bin/watch_uncertainty 100            # live fields
 # disturb ptp4l -> show ptp4l_connected=0 and drift climbing
-./bin/watch_uncertainty -raw 100 > u.csv
-python3 scripts/visualize_uncertainty.py u.csv -o plot.png
 ```
-
-Have a pre-recorded plot ready — conference Wi-Fi rarely carries clean PTP.
 
 ---
 
 ## Facts grounded in the repo (kept accurate on slides)
 
-- Formula: `total_uncertainty_ns = |offset_from_master_ns| + |mean_path_delay_ns| + drift_ns`.
+- Formula (talk): `total_uncertainty_ns = |offset_from_master_ns| + drift_ns`.
+  Mean path delay is measured and compensated by PTP, so it is **excluded** (adding
+  it double-counts). *Note:* the current daemon/README still add `|mean_path_delay_ns|`;
+  the figures recompute without it — update the daemon to match the talk.
 - `drift_ns = (now_mono − ingress_mono) × max_drift_ppb / 1e9`.
 - Default `max_drift_ppb = 100000` (100 ppm); default poll 1000 ms; auto-poll ≥ 2× sync rate.
 - Datasets read: `CURRENT_DATA_SET`, `PORT_DATA_SET`, `TIME_STATUS_NP`, `PORT_HWCLOCK_NP`.
@@ -88,6 +117,14 @@ Have a pre-recorded plot ready — conference Wi-Fi rarely carries clean PTP.
   `total_uncertainty_ns`, `drift_ns`, `age_ns`, `ptp4l_connected`, `is_synchronized`.
 - On `ptp4l` disconnect the daemon preserves the last anchor, sets `ptp4l_connected=0`,
   and drift keeps growing.
+- Oscillator captures share a negligible residual floor (just `|offset|`, tens of
+  ns, since path delay is compensated); peak `|offset|+drift` scales with
+  `max_drift_ppb`: ~0.3 µs (100 ppb) → ~1.3 µs (1 ppm) → ~12 µs (10 ppm) → ~120 µs (100 ppm).
+- Meta `fbclock` (slide 29) parallels: returns `[earliest_ns, latest_ns]`; Go
+  daemon + POSIX shmem + C11 library; statistical window `W = mean(M) + k·stddev(M)`
+  with `M = clockaccuracy + |offset| + stddev(offset)`, k→4 (≈6-nines target);
+  holdover drift `1.5·mean(|freqchange|)` from PHC freq-adjust history + temp/
+  vibration telemetry. Source: Meta Engineering blog (2022), `time/fbclock`.
 
 ---
 
@@ -96,6 +133,16 @@ Have a pre-recorded plot ready — conference Wi-Fi rarely carries clean PTP.
 - **Is `U` a statistical confidence interval?** No — a conservative worst-case bound
   by default; you can layer statistics on top.
 - **Why 100 ppm default?** Safe generic bound; tune per oscillator/NIC datasheet.
+  The measurement slides show exactly what tuning it buys you (~45× range).
+- **Did you change the crystal between runs?** No — same host and network; only
+  the daemon's `max_drift_ppb` bound changed, which is how you'd model each
+  oscillator class. It isolates the drift term cleanly.
+- **How does this compare to Meta's fbclock?** Same idea and same architecture
+  (daemon + shmem + client library returning an interval). fbclock uses a
+  statistical sigma-based window and estimates holdover drift from PHC frequency
+  history plus temperature/vibration telemetry; this project uses a conservative
+  worst-case bound and a configured drift rate. fbclock is the production existence
+  proof; this is the minimal, readable open take that also surfaces the kernel gaps.
 - **Does this replace PTP?** No — it consumes PTP state; it does not discipline clocks.
 - **How does it relate to NTP root dispersion?** Same philosophy (explicit error
   budget), different data sources and timescales.
