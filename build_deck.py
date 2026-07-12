@@ -376,7 +376,7 @@ def build(path):
 
     # 5
     content_slide(
-        prs, "We spent a decade chasing precision",
+        prs, "We spent two decades chasing precision",
         [("Sub-microsecond PTP is now common on data-center and AI fabrics", 0),
          ("Hardware timestamping in NICs, SmartNICs, DPUs", 0),
          ("Multi-node GPU traces spanning thousands of ranks", 0),
@@ -399,7 +399,8 @@ def build(path):
          ["Telemetry", "counters sampled together", "inter-node skew \u2192 phantom correlations"],
          ["Forensics", "log A caused log B", "causal chain is indefensible"],
          ["Sensor fusion", "radar + camera aligned", "physical-world misalignment"],
-         ["Finance", "trade timestamped correctly", "can't prove mandated window (MiFID II)"]],
+         ["Finance", "trade timestamped correctly", "can't prove mandated window (MiFID II)"],
+         ["Launch time load balancing", "packets will have their dedicated slots", "packet collisions"]],
         6, kicker="The problem",
         notes="Draft with the full menu of use cases \u2014 trim during review. The core "
               "three (ordering, causality, compliance) carry the argument; the rest "
@@ -409,14 +410,81 @@ def build(path):
               "(sensor fusion), and regulated timestamping (MiFID II). Auditors care "
               "about defensible ordering, not nanosecond vanity metrics.")
 
-    # 7
-    statement_slide(
-        prs,
-        "Two events 200 ns apart, each known to \u00b1150 ns.",
-        "Their true order is unknown \u2014 and nothing in the timestamp told you so.",
-        7,
-        notes="This is the aha. The numbers look confident; the reality is "
-              "ambiguous. We need the error bar to be part of the data.")
+    # 7 — the problem, drawn: two overlapping error bars
+    s = _blank(prs)
+    _set_bg(s, LIGHT)
+    _rect(s, Inches(0.9), Inches(1.02), Inches(2.6), Inches(0.10), ACCENT)
+    _text(s, Inches(0.9), Inches(1.18), Inches(11.7), Inches(1.0),
+          [[R("Two events 200 ns apart, each known to \u00b1150 ns.", 30, True, INK)]])
+
+    AMBER_BG = RGBColor(0xFB, 0xE8, 0xC0)
+    AMBER_DK = RGBColor(0xB4, 0x76, 0x0A)
+    GUIDE = RGBColor(0xC2, 0xCB, 0xDD)
+    A_FILL = ACCENT
+    B_FILL = ACCENT2
+
+    # time -> x mapping: t=0 ns at x0, 0.013 in per ns
+    x0, per_ns = Inches(5.2), Inches(0.013)
+
+    def X(ns):
+        return int(x0 + int(round(ns * per_ns)))
+
+    yA, yB, axis_y = Inches(3.35), Inches(4.35), Inches(5.05)
+    bar_h, cap_h = Inches(0.18), Inches(0.36)
+
+    # overlap strip (drawn first, behind everything)
+    ox0, ox1 = X(50), X(150)
+    _rect(s, ox0, Inches(2.95), ox1 - ox0, Inches(2.10), AMBER_BG)
+    _text(s, ox0, Inches(3.0), ox1 - ox0, Inches(0.4),
+          [[R("overlap", 14, True, AMBER_DK)]],
+          align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+
+    # time axis
+    _rect(s, X(-200), axis_y, X(400) - X(-200), Pt(2), MUTED)
+
+    def error_bar(cy, lo, hi, c, fill, name):
+        left, right = X(lo), X(hi)
+        # guide from centre down to the axis
+        _rect(s, X(c), cy, Pt(1.5), int(axis_y - cy), GUIDE)
+        # interval band + end caps
+        _rect(s, left, int(cy - bar_h / 2), right - left, bar_h, fill)
+        _rect(s, left, int(cy - cap_h / 2), Pt(4), cap_h, fill)
+        _rect(s, int(right - Pt(4)), int(cy - cap_h / 2), Pt(4), cap_h, fill)
+        # centre marker (the reported timestamp)
+        _rect(s, int(X(c) - Pt(3)), int(cy - cap_h / 2 - Inches(0.05)),
+              Pt(6), int(cap_h + Inches(0.10)), INK)
+        # event label to the left
+        _text(s, int(left - Inches(0.62)), int(cy - Inches(0.2)),
+              Inches(0.5), Inches(0.4), [[R(name, 18, True, fill)]],
+              align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+
+    error_bar(yA, -150, 150, 0, A_FILL, "A")
+    error_bar(yB, 50, 350, 200, B_FILL, "B")
+
+    # half-width dimension bracket under event A: 150 ns each side of the centre
+    dim_y = int(yA + Inches(0.20))
+    _rect(s, X(-150), dim_y, X(150) - X(-150), Pt(1.5), MUTED)
+    for tx in (X(-150), X(0), X(150)):
+        _rect(s, tx, int(dim_y - Inches(0.04)), Pt(1.5), Inches(0.11), MUTED)
+    _text(s, X(-150), int(dim_y + Inches(0.05)), X(0) - X(-150), Inches(0.3),
+          [[R("150 ns", 12, False, INK, FONT, True)]],
+          align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+    _text(s, X(0), int(dim_y + Inches(0.05)), X(150) - X(0), Inches(0.3),
+          [[R("150 ns", 12, False, INK, FONT, True)]],
+          align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+    # gap annotation (200 ns) below the axis, between the two centres
+    _text(s, X(0), int(axis_y + Inches(0.45)), X(200) - X(0), Inches(0.35),
+          [[R("\u2190  200 ns apart  \u2192", 14, True, INK)]],
+          align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+
+    _text(s, Inches(0.92), Inches(6.15), Inches(11.7), Inches(0.9),
+          [[R("Their true order is unknown \u2014 and nothing in the timestamp told "
+              "you so.", 20, False, MUTED, FONT, True)]])
+    _footer(s, 7)
+    _notes(s, "This is the aha. The numbers look confident; the reality is "
+              "ambiguous. Each bar is the timestamp \u00b1 its uncertainty; because "
+              "150 + 150 > 200, the intervals overlap (amber) and either event "
+              "could have come first. We need the error bar to be part of the data.")
 
     # ---- PART 2 ----
     section_slide(prs, "Part 2", "A timestamp is an interval", 8)
@@ -427,6 +495,7 @@ def build(path):
         [("Instead of:  \u201cthe event happened at t\u201d", 0),
          ("Say:  \u201cthe event happened at t \u00b1 U\u201d", 0),
          ("U = the time-uncertainty bound at the moment of observation", 1),
+         ("Also can be viewed as earliest-latest", 1),
          ("Now applications can ask explicit questions:", 0),
          ("Is ordering between A and B definite, or ambiguous?", 1),
          ("Is this window fresh enough for a compliance decision?", 1)],
@@ -462,6 +531,13 @@ def build(path):
     _rect(s, int(bar_x + bar_w - Pt(3.5)), int(base_y - tick_h / 2), Pt(3.5), tick_h, ACCENT)
     _rect(s, int(bar_x + bar_w / 2), int(base_y - tick_h / 2 - Inches(0.05)),
           Pt(3.5), int(tick_h + Inches(0.1)), INK)
+    # earliest / latest, above the interval end-caps
+    _text(s, int(bar_x - Inches(0.7)), int(base_y - tick_h / 2 - Inches(0.34)),
+          Inches(1.4), Inches(0.3), [[R("earliest", 13, False, ACCENT, FONT, True)]],
+          align=PP_ALIGN.CENTER)
+    _text(s, int(bar_x + bar_w - Inches(0.7)), int(base_y - tick_h / 2 - Inches(0.34)),
+          Inches(1.4), Inches(0.3), [[R("latest", 13, False, ACCENT, FONT, True)]],
+          align=PP_ALIGN.CENTER)
     _text(s, int(bar_x - Inches(0.55)), base_y + Inches(0.34), Inches(1.1), Inches(0.4),
           [[R("t\u2212U", 14, True, ACCENT)]], align=PP_ALIGN.CENTER)
     _text(s, int(bar_x + bar_w / 2 - Inches(0.4)), base_y + Inches(0.34), Inches(0.8), Inches(0.4),
@@ -484,8 +560,9 @@ def build(path):
           [[R("The overlap region is where causality cannot be resolved from "
               "timestamps alone.", 15, False, MUTED, FONT, True)]])
     _footer(s, 10)
-    _notes(s, "Draw this on a whiteboard if possible. 'Unknown' is a valid, "
-              "useful answer a system can act on.")
+    _notes(s, "Draw this on a whiteboard if possible. The interval end-points have "
+              "names: t\u2212U is the earliest the event could have happened, t+U the "
+              "latest. 'Unknown' is a valid, useful answer a system can act on.")
 
     # 11 — is / is not
     two_col_slide(
@@ -508,12 +585,12 @@ def build(path):
     # 13 — the stack
     code_slide(
         prs, "Walk the stack, bottom to top",
-        ["  6  Userspace observation delay      <- syscall + scheduling",
-         "  5  Kernel -> userspace transfer     <- IRQ, softirq, copy",
-         "  4  Timestamp capture point          <- HW vs SW",
-         "  3  Network path asymmetry           <- queueing, routing",
-         "  2  PTP servo & synchronization      <- offset, delay",
-         "  1  Oscillator / PHC hardware        <- drift, temperature"],
+        ["  6  Userspace observation delay   <- syscall + scheduling",
+         "  5  Kernel -> userspace transfer  <- IRQ, softirq, copy",
+         "  4  Timestamp capture point       <- HW vs SW",
+         "  3  Network                       <- queueing, routing, hop count",
+         "  2  PHC clock                     <- offset, clock resolution",
+         "  1  Oscillator                    <- drift, temperature"],
         13, kicker="Anatomy",
         caption="Each layer adds error or delay. Only some layers expose metrics.",
         notes="Walk slowly. The point: 'the event time' means different things at "
@@ -523,9 +600,12 @@ def build(path):
     table_slide(
         prs, "The uncertainty budget: every source",
         ["Source of error", "What it contributes", "In the bound?"],
-        [["Grandmaster class & its own error",
-          "GM clockClass / accuracy + the GM\u2019s time error",
-          "via |offset| (steps removed)"],
+        [["Grandmaster class",
+          "advertised GM quality (clockClass / accuracy)",
+          "error bound we are told"],
+         ["Offset from grandmaster",
+          "our offset, measured from the t1\u2013t4 exchange",
+          "yes \u2014 |offset| term"],
          ["Local oscillator drift",
           "free-run drift between syncs (ppb\u2013ppm)",
           "yes \u2014 drift term"],
@@ -546,9 +626,12 @@ def build(path):
           "unmodeled \u2014 conservative gap"]],
         14, kicker="Anatomy",
         notes="A consolidated budget before we zoom into individual layers. Two "
-              "sources come from the source clock itself: the grandmaster's class "
-              "(clockClass / clockAccuracy) and its own residual time error \u2014 both "
-              "reach us folded into offsetFromMaster and stepsRemoved. Two come "
+              "sources come from the source clock itself, and they differ in kind: "
+              "the grandmaster's class (clockClass / clockAccuracy) is an advertised "
+              "bound on the source quality, while the offset from the grandmaster is "
+              "our own value, measured locally from the t1-t4 timestamp exchange \u2014 "
+              "that measured |offset| is what enters the bound. (stepsRemoved is "
+              "neither: just the hop count to the GM.) Two come "
               "from our local oscillator: its free-run drift between sync messages, "
               "and holdover when discipline is lost entirely. Two are properties of "
               "reading the clock: the access latency of a PHC or clock_gettime "
@@ -559,18 +642,22 @@ def build(path):
               "see, which stays an unmodeled conservative gap. The rest of Part 3 "
               "drills into the ones that dominate.")
 
-    # 15 — offset & delay
+    # 15 — oscillator & PHC clock
     content_slide(
-        prs, "Layers 1\u20132: hardware & sync offset",
-        [("Oscillator: TCXO/OCXO stability (ppb), temperature sensitivity, PHC read latency", 0),
-         ("PTP gives estimates, not truths:", 0),
-         ("offsetFromMaster \u2014 clock offset estimate", 1),
-         ("meanPathDelay \u2014 path-asymmetry estimate", 1),
-         ("stepsRemoved \u2014 distance from the grandmaster", 1),
-         ("The servo converges; it never mathematically reaches zero", 0)],
+        prs, "Layers 1\u20132: oscillator & PHC clock",
+        [("Oscillator (layer 1): TCXO/OCXO stability (ppb), temperature sensitivity, free-run drift", 0),
+         ("PHC clock (layer 2): the disciplined hardware clock we actually read", 0),
+         ("offsetFromMaster \u2014 offset estimate", 1),
+         ("clock resolution \u2014 granularity of a single tick", 1),
+         ("PHC read latency \u2014 the cost of reading it", 1),
+         ("The servo converges toward zero offset; it never mathematically reaches it", 0)],
         15, kicker="Anatomy",
-        notes="PTP believes something about your clock. That belief is an input to "
-              "U, not a guarantee.")
+        notes="Layer 1 is the oscillator alone \u2014 stability in ppb and temperature "
+              "sensitivity, free-running drift. Layer 2 is the PHC clock it feeds: "
+              "offsetFromMaster is an estimate (not a truth), and the clock has a "
+              "finite resolution (tick granularity) plus a read latency. PTP "
+              "believes something about your clock; that belief is an input to U, "
+              "not a guarantee.")
 
     # 16 — capture point table
     table_slide(
@@ -583,21 +670,24 @@ def build(path):
         notes="Critical for profiling: GPU, NIC and CPU may live in different "
               "timestamp domains even when 'synced'.")
 
-    # 17 — kernel path
+    # 17 — network & kernel path
     content_slide(
         prs, "Layers 3 & 5: network and kernel path",
-        [("PTP compensates the mean path delay \u2014 so it is not in the bound", 0),
-         ("Residual risk is path asymmetry (up/down differ) \u2014 unmodeled today", 1),
-         ("Linux exposes useful data \u2014 but not as one package:", 0),
+        [("Network (layer 3): each hop adds queueing + routing delay", 0),
+         ("PTP compensates the mean path delay \u2014 so it is not in the bound", 1),
+         ("Residual is link asymmetry (up/down differ), accumulating with hop count \u2014 unmodeled", 1),
+         ("Kernel path (layer 5): Linux exposes useful data \u2014 but not as one package:", 0),
          ("PTP_SYS_OFFSET / _EXTENDED \u2014 PHC vs system clock", 1),
          ("SO_TIMESTAMPING \u2014 ingress / egress timestamps", 1),
          ("ptp4l management API \u2014 offset, delay, ingress time", 1)],
         17, kicker="Anatomy",
-        notes="Mean path delay is measured and compensated by PTP, so it does not "
-              "belong in the uncertainty bound; only the residual up/down asymmetry "
-              "does, and we do not get a clean measurement of it. Foreshadow the "
-              "kernel-gaps section: ingredients exist, the single 'current "
-              "uncertainty' API does not.")
+        notes="Layer 3 is the network: every hop \u2014 transparent/boundary clocks and "
+              "queues \u2014 adds delay. PTP measures and compensates the mean path "
+              "delay, so it is not in the bound; only the residual up/down asymmetry "
+              "is, it grows with hop count, and we do not get a clean measurement of "
+              "it. Layer 5 is the kernel path: the ingredients exist (PTP_SYS_OFFSET, "
+              "SO_TIMESTAMPING, ptp4l mgmt), but the single 'current uncertainty' "
+              "API does not. Foreshadow the kernel-gaps section.")
 
     # 18 — staleness (the big one)
     code_slide(
@@ -637,7 +727,7 @@ def build(path):
         ["  TIME_STATUS_NP.ingress_time",
          "     = when the last sync event arrived (PHC time)",
          "",
-         "  drift_ns = (now_mono - ingress_mono)",
+         "  drift_ns = (time_now - ingress_time)",
          "                 * max_drift_ppb / 1e9",
          "",
          "  Uncertainty grows between sync messages",
@@ -649,13 +739,16 @@ def build(path):
     # 22 — the formula
     statement_slide(
         prs,
-        "total_uncertainty_ns = |offset| + drift",
-        "Mean path delay is compensated by PTP, so it is excluded.  Example: 80 ns offset + 50 ns drift = 130 ns bound.",
+        "total_uncertainty_ns = |offset| + drift + clock_resolution + capture_point_error",
+        "Example: 50 ns drift + 8 ns resolution + 40 ns capture \u2248 98 ns bound.",
         22,
-        notes="PTP measures and compensates the mean path delay inside the offset, "
-              "so adding it back would double-count. The residual path-asymmetry "
-              "term is real but unmodeled here \u2014 a known conservative gap. This is "
-              "a practical model, not a full Allan-deviation analysis.")
+        notes="Three residual terms after the offset correction is applied: drift "
+              "(staleness), clock resolution (tick granularity), and capture-point "
+              "error (HW vs SW stamp). Mean path delay is measured and compensated "
+              "by PTP inside the offset, so it is not added; the offset itself is a "
+              "correction, not an uncertainty. Residual path asymmetry is real but "
+              "unmodeled here \u2014 a known conservative gap. A practical model, not a "
+              "full Allan-deviation analysis.")
 
     # 23 — port state trust
     table_slide(

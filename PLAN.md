@@ -47,7 +47,7 @@ slide (18), the formula (22), the Meta validation (29), or the sawtooth capture 
 
 1. **Hook** — "A happened before B" is a decision we make thousands of times a
    second, and we almost never check whether the timestamps can actually support it.
-2. **Problem** — We spent a decade making clocks precise (sub-µs PTP). Precision
+2. **Problem** — We spent two decades making clocks precise (sub-µs PTP). Precision
    raised confidence faster than it raised correctness.
 3. **Model** — Treat every timestamp as `t ± U`. Ordering is *definite* only when
    the intervals don't overlap; otherwise it is *unknown*, not *wrong*.
@@ -59,11 +59,11 @@ slide (18), the formula (22), the Meta validation (29), or the sawtooth capture 
 6. **Implementation** — `ptp_unc_dmn` polls `ptp4l`, publishes a snapshot through
    shared memory, and clients extrapolate a live bound at read time — surviving
    `ptp4l` restarts by holding the last anchor while drift keeps growing.
-6.3. **Validation** — This isn't a fringe idea: Meta's `fbclock` ships the same
+   6.3. **Validation** — This isn't a fringe idea: Meta's `fbclock` ships the same
    interval ("Window of Uncertainty" `[earliest, latest]`) with the same
    daemon+shmem+library shape at fleet scale. Two honest differences: statistical
    vs worst-case bound, and empirical drift+telemetry vs a configured drift bound.
-6.5. **Evidence** — Real captures from the daemon across four oscillator classes
+   6.5. **Evidence** — Real captures from the daemon across four oscillator classes
    (100 ppb / 1 ppm / 10 ppm / 100 ppm) show the sawtooth of staleness and prove
    the drift term — not PTP — sets the uncertainty envelope (~0.3 µs → ~120 µs).
 7. **Payoff** — The prior talk made reading the clock *fast* (cheap userspace

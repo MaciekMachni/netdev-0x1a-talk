@@ -83,11 +83,11 @@ it at the end.
 
 Part one. The premise: precise is not the same as correct.
 
-### Slide 5 — We spent a decade chasing precision  (3:15)
+### Slide 5 — We spent two decades chasing precision  (3:15)
 
-We have spent roughly a decade chasing precision, and we won.
+We have spent roughly two decades chasing precision, and we won.
 
-Sub-microsecond PTP is now normal on data-center and AI fabrics. Hardware
+Sub-microsecond PTP is now normal across data centers and AI fabrics. Hardware
 timestamping is built into NICs, SmartNICs, DPUs. We routinely capture GPU traces
 that span thousands of ranks across a cluster.
 
@@ -98,9 +98,10 @@ Precision raised our *confidence* faster than it raised our *correctness*. We
 started treating "the clock is very precise" as if it meant "the timestamp is
 exactly right." Those are not the same statement.
 
-### Slide 6 — Three ways timestamps quietly mislead  (4:30)
+### Slide 6 — Ways timestamps quietly mislead  (4:30)
 
-That gap shows up in three places.
+That gap shows up all over the stack. Start with the three that carry the
+argument.
 
 *Ordering.* We claim A came before B — but if the two intervals overlap, the true
 order is simply unknown.
@@ -112,18 +113,29 @@ the apparent order and manufacture a cause that never existed.
 error, we can't *prove* that ordering is defensible. And auditors care about
 defensible ordering, not about how many nanoseconds we can print.
 
+And it doesn't stop there — the same failure reappears everywhere we lean on time.
+Database consistency, where overlapping commit windows break external
+consistency. Profiling, where cross-node spans misorder. Leases and locks, where
+overlapping windows hand you two leaders and a split brain. Then telemetry
+correlation, distributed forensics, sensor fusion, regulated financial
+timestamping. [PAUSE] One root cause, a very long blast radius. Don't read the
+whole table — land the top three and gesture at the rest.
+
 ### Slide 7 — Two events 200 ns apart, ±150 ns  (5:45)
 
-Let me make it concrete. [PAUSE]
+Let me make it concrete — and let me draw it. [PAUSE]
 
-Two events. They're 200 nanoseconds apart. But each timestamp is only known to
-within plus-or-minus 150 nanoseconds.
+Two events, 200 nanoseconds apart. But each timestamp is only known to within
+plus-or-minus 150 nanoseconds — so each one isn't a point, it's a bar that reaches
+150 nanoseconds to either side of the reported time.
 
-Their true order is *unknown*. [PAUSE] The intervals overlap — either one could
-have come first.
+Now look at what that does. Each bar is 150 nanoseconds on *each* side — that's the
+little dimension under event A — and the two events are only 200 nanoseconds apart.
+So the bars overlap. That amber region is the overlap, and inside it either event
+could have come first. Their true order is *unknown*. [PAUSE]
 
-And the point that should bother you: nothing in that timestamp told you so. The
-numbers looked perfectly confident. 200 nanoseconds apart, printed to the
+And the point that should bother you: nothing in the bare timestamps told you so.
+The numbers looked perfectly confident — 200 nanoseconds apart, printed to the
 nanosecond. The ambiguity was invisible because the error bar wasn't part of the
 data.
 
@@ -144,7 +156,11 @@ The whole shift is this small.
 Instead of saying "the event happened at *t*," we say "the event happened at
 *t plus-or-minus U*." [PAUSE]
 
-*U* is the time-uncertainty bound at the moment we observed the event.
+*U* is the time-uncertainty bound at the moment we observed the event. You can
+read the same thing two ways: as *t plus-or-minus U*, or as an *earliest* and a
+*latest* — the event happened no sooner than *t minus U* and no later than
+*t plus U*. Same interval, two vocabularies; the earliest/latest framing is the
+one most timing APIs actually expose.
 
 And once *U* is part of the record, the application can ask questions it simply
 could not ask before. Is the ordering between A and B *definite*, or is it
@@ -156,10 +172,13 @@ These become explicit, answerable questions instead of silent assumptions.
 Here's the rule that falls out of it.
 
 On the left, the old point model: a single tick on a line. On the right, the
-interval model: a band from *t minus U* to *t plus U*.
+interval model: a band from *t minus U* to *t plus U* — or, in the words on the
+slide, from the *earliest* the event could have happened to the *latest*.
 
 The rule: **A is before B *only if* T-A plus U-A is less than T-B minus U-B.**
-Only if the whole interval of A sits entirely below the whole interval of B.
+In earliest/latest terms: A is before B only if the *latest* A could have been is
+still earlier than the *earliest* B could have been. Only if the whole interval of
+A sits entirely below the whole interval of B.
 
 And if they overlap? The answer is not "wrong." The answer is **ambiguous —
 unknown, not wrong.** [PAUSE]
@@ -197,12 +216,27 @@ stack.
 
 Six layers, bottom to top.
 
-At the bottom, the *oscillator and PHC hardware* — it drifts, and it drifts with
-temperature. Above that, the *PTP servo* that disciplines the clock — offset and
-delay. Then *network path asymmetry* — queueing and routing. Then the *timestamp
-capture point* — was it taken in hardware or software? Then the *kernel-to-
-userspace transfer* — interrupts, softirqs, a copy. And at the top, the
-*userspace observation delay* — the syscall and the scheduler.
+At the bottom, layer one, the *oscillator* alone — it drifts, and it drifts with
+temperature. Layer two, the *PHC clock* it feeds — that's where the *offset* from
+the reference lives, and its finite *clock resolution*, the granularity of a
+single tick. Layer three, the *network* — queueing, routing, and the number of
+hops the sync has to cross. Then the *timestamp capture point* — was it taken in
+hardware or software?
+
+Then layer five, the *kernel-to-userspace transfer*. The event arrives as a
+hardware interrupt, but the kernel doesn't finish the job right there — it defers
+the real work to a *softirq* that runs soon, but not instantly — and then the data
+has to be *copied* out of kernel memory into your process. Every one of those hops
+adds delay between when the event actually happened and when your program can see
+it, and because it varies with system load, it shows up as jitter, not a constant
+you can subtract out.
+
+And at the top, layer six, the *userspace observation delay*. Even once the data
+is in your process, *reading the clock is itself a syscall* — a trip into the
+kernel and back — and your thread is at the mercy of the *scheduler*: under load
+it can be preempted and parked for microseconds before it gets to run. So the
+instant you finally record can trail the real event by an amount you never
+measure.
 
 Every one of these layers adds either error or delay. [PAUSE] And here's the
 uncomfortable part: only *some* of them expose a metric you can read. "The event
@@ -216,9 +250,15 @@ But first, the whole budget on one slide.
 Before we zoom into the layers one by one, here is every source of error that can
 widen your interval, grouped four ways.
 
-Two come from the *source clock* itself: the grandmaster's *class* — its
-`clockClass` and `clockAccuracy` — and the grandmaster's own residual time error.
-Both reach us folded into `offsetFromMaster` and `stepsRemoved`. [PAUSE]
+Two come from the *source clock* itself, and they are different in kind. First,
+the grandmaster's *class* — its `clockClass` and `clockAccuracy`. We don't measure
+this; the grandmaster *advertises* it, and it gives us a bound on how good the
+source is. Second, the *offset from* that grandmaster — and this one we *do*
+measure, locally, from the t1–t4 timestamp exchange. That measured offset is the
+`|offset|` term that goes straight into the bound. One is a quality we're told; the
+other is an offset we compute — keep them separate. (And `stepsRemoved` is 
+the hop count, the number of boundary clocks between the
+grandmaster, for which we may also want to assume some static value.)
 
 Two come from *our* oscillator: its free-run *drift* between sync messages, and,
 in the extreme, *holdover* — the drift that keeps accumulating when discipline is
@@ -237,15 +277,17 @@ Watch the last column. Some of these we fold straight into the bound; PTP
 cannot see, so it stays a conservative gap. Now let me pull out the ones that
 dominate.
 
-### Slide 15 — Layers 1–2: hardware & sync offset  (14:45)
+### Slide 15 — Layers 1–2: oscillator & PHC clock  (14:45)
 
-The oscillator first. Its stability is measured in parts per billion, and it's
-sensitive to temperature. Even reading the hardware clock has a latency.
+Layer one, the oscillator. Its stability is measured in parts per billion, and
+it's sensitive to temperature — and left to free-run, it drifts.
 
-Then PTP sits on top and gives us estimates — and I want to stress the word
-*estimates*, not truths. `offsetFromMaster` is an *estimate* of our clock offset.
-`meanPathDelay` is an *estimate* of the path asymmetry. `stepsRemoved` tells us
-how far we are from the grandmaster.
+Layer two is the PHC clock the oscillator feeds — the hardware clock we actually
+read. Two things live here. First, `offsetFromMaster` — and I want to stress this
+is an *estimate* of our offset from the reference. Second, the
+clock's *resolution* — the granularity of a single tick, the smallest difference
+it can even represent. And reading it isn't free either; the read itself has a
+latency.
 
 The servo *converges* toward zero offset. It never mathematically *reaches* zero.
 So PTP believes something about your clock — and that belief is an input to *U*,
@@ -269,18 +311,20 @@ synchronized.
 
 Two more layers, quickly.
 
-The network: here's a subtlety that trips people up. PTP *measures* the mean path
+Layer three, the network. Every hop — each transparent or boundary clock, each
+switch queue — adds delay, and the more hops the sync crosses, the more of it
+accumulates. Now the subtlety that trips people up: PTP *measures* the mean path
 delay and *compensates* for it inside the offset — so the mean itself is not
-uncertainty; it's already corrected out. What's left is path *asymmetry*: when the
-up and down directions differ, on AI fabrics with asymmetric links and leaf-switch
-queueing. That residual is a real source, but we don't get a clean measurement of
-it, so it stays out of the bound.
+uncertainty; it's already corrected out. What's left is link *asymmetry*: when the
+up and down directions differ, on fabrics with asymmetric links and leaf-switch
+queueing, and it grows with hop count. That residual is a real source, but we
+don't get a clean measurement of it, so it stays out of the bound.
 
-And the kernel: Linux actually exposes a lot of useful data here — but not as one
-tidy package. `PTP_SYS_OFFSET` cross-timestamps the PHC against the system clock.
-`SO_TIMESTAMPING` gives you ingress and egress timestamps. The `ptp4l` management
-API gives you offset, delay, and ingress time. The ingredients are all there.
-Remember that — I'll come back to what's *missing* at the end.
+And layer five, the kernel path: Linux actually exposes a lot of useful data here
+— but not as one tidy package. `PTP_SYS_OFFSET` cross-timestamps the PHC against
+the system clock. `SO_TIMESTAMPING` gives you ingress and egress timestamps. The
+`ptp4l` management API gives you offset, delay, and ingress time. The ingredients
+are all there. Remember that — I'll come back to what's *missing* at the end.
 
 ### Slide 18 — The layer everyone forgets: staleness  (18:30)
 
@@ -328,7 +372,7 @@ And this is how we build it. The key is that ingress time.
 `TIME_STATUS_NP` tells us *when the last sync event actually arrived*, in PHC
 time. That timestamp is our *anchor*.
 
-Then the drift term is simple: take the monotonic time now, subtract the monotonic
+Then the drift term is simple: take the time now, subtract the
 time at that ingress anchor, and multiply by a worst-case drift bound in parts per
 billion. [PAUSE]
 
@@ -339,23 +383,31 @@ messages — even when the offset number on the screen is sitting perfectly flat
 
 So here is the whole model on one slide.
 
-**Total uncertainty equals the absolute offset plus the drift.** [PAUSE]
+**Total uncertainty is the sum of three residual terms — the drift, the clock
+resolution, and the capture-point error.** [PAUSE]
 
-Two terms. The offset — how far PTP thinks we are from the master. And the drift —
-the staleness since the last sync.
+The first and biggest is *drift* — the staleness we just built, growing since the
+last sync. The second is *clock resolution* — you can never place an event more
+finely than a single tick, so that granularity is a hard floor under the bound.
+And the third is the *capture-point error* — where the timestamp was actually
+taken: a hardware stamp in the NIC is tight, a software `SO_TIMESTAMPING` stamp or
+a plain `clock_gettime` in your app is looser.
 
-Now, you might expect path delay in here. It's not, and that's deliberate. PTP
-already *measures* the mean path delay and *compensates* for it inside the offset.
-If I added it back, I'd be counting it twice. What's genuinely left is path
-*asymmetry* — the up and down directions differing — and that's real, but PTP
-doesn't hand it to us, so I leave it out and stay conservative about it.
+Notice what's *not* in the sum. The mean path delay isn't here — PTP measures and
+compensates it inside the offset, so adding it would double-count. And the offset
+itself is a *correction we apply* to get our best estimate of the time, not an
+uncertainty we add on top; what's left after that correction is these three
+residual terms. The one thing we stay deliberately conservative about is path
+*asymmetry* — the up and down directions differing — which PTP doesn't hand us, so
+we leave it out and treat it as a known gap.
 
-A worked number: offset of 80 nanoseconds, drift of 50 — total 130 nanoseconds.
-That 130 is the half-width of the interval you attach to your timestamp.
+A worked number: 50 nanoseconds of drift, 8 nanoseconds of resolution, and about
+40 nanoseconds of capture-point error — call it a hundred-nanosecond bound. That
+total is the half-width of the interval you attach to your timestamp.
 
 I want to be honest about what this is: it's a *practical* model. It is not a full
 Allan-deviation analysis of your oscillator. It's a conservative, computable bound
-built from the data PTP actually gives us — and that's exactly what makes it
+built from the data we actually have — and that's exactly what makes it
 usable in production.
 
 ### Slide 23 — Sync status is a prerequisite, not a proof  (25:15)
