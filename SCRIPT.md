@@ -383,31 +383,33 @@ messages — even when the offset number on the screen is sitting perfectly flat
 
 So here is the whole model on one slide.
 
-**Total uncertainty is the sum of three residual terms — the drift, the clock
+**Total uncertainty is the sum of four residual terms — the offset, the drift, the clock
 resolution, and the capture-point error.** [PAUSE]
 
-The first and biggest is *drift* — the staleness we just built, growing since the
-last sync. The second is *clock resolution* — you can never place an event more
+The first one is the absolute value of the last offset calculated by the servo.
+
+The second and biggest is *drift* — the staleness we just built, growing since the
+last sync. The third is *clock resolution* — you can never place an event more
 finely than a single tick, so that granularity is a hard floor under the bound.
-And the third is the *capture-point error* — where the timestamp was actually
+And the fourth is the *capture-point error* — where the timestamp was actually
 taken: a hardware stamp in the NIC is tight, a software `SO_TIMESTAMPING` stamp or
 a plain `clock_gettime` in your app is looser.
 
-Notice what's *not* in the sum. The mean path delay isn't here — PTP measures and
-compensates it inside the offset, so adding it would double-count. And the offset
-itself is a *correction we apply* to get our best estimate of the time, not an
-uncertainty we add on top; what's left after that correction is these three
-residual terms. The one thing we stay deliberately conservative about is path
+The one thing we stay deliberately conservative about is path
 *asymmetry* — the up and down directions differing — which PTP doesn't hand us, so
 we leave it out and treat it as a known gap.
 
-A worked number: 50 nanoseconds of drift, 8 nanoseconds of resolution, and about
-40 nanoseconds of capture-point error — call it a hundred-nanosecond bound. That
+We can also assign some static value per hop and use that as a measure of additional
+error for each node, the PTP packet had to go between the GM and us.
+
+A worked number: 12 nanoseconds offset, 50 nanoseconds of drift, 
+8 nanoseconds of resolution, and about 40 nanoseconds of 
+capture-point error — call it a hundred ten bound. That
 total is the half-width of the interval you attach to your timestamp.
 
 I want to be honest about what this is: it's a *practical* model. It is not a full
 Allan-deviation analysis of your oscillator. It's a conservative, computable bound
-built from the data we actually have — and that's exactly what makes it
+built from the most basic data we actually have — and that's exactly what makes it
 usable in production.
 
 ### Slide 23 — Sync status is a prerequisite, not a proof  (25:15)
@@ -415,7 +417,7 @@ usable in production.
 One more piece before we build it: the port state gates whether the bound even
 means anything.
 
-In `SLAVE` state we're actively disciplining — the bounds are meaningful. In
+In the SLAVE state, we're actively disciplining — the bounds are meaningful. In
 `UNCALIBRATED` we're still converging — the bounds are unstable, don't lean on
 them. In `LISTENING` or `FAULTY`, don't trust ordering claims at all.
 
@@ -431,31 +433,32 @@ status is a *prerequisite* for trust — it is never a *proof* of it.
 ### Slide 24 — Part 5: A model implementation  (27:00)
 
 Part five. Let's make it something you can actually run. This is `ptp-uncertainty`
-— a small daemon and a client library.
+— a small daemon and a client library that I built to visualize the concept, and verify
+which data would such an app need to reliably calculate error bounds?
 
 ### Slide 25 — Architecture  (27:15)
 
 The shape is deliberately simple.
 
-`ptp4l` runs as it always does. Our daemon, `ptp_unc_dmn`, connects to its Unix
+`ptp4l` runs as it always does. The daemon, `ptp_unc_dmn`, connects to its Unix
 management socket and polls offset, delay, and ingress time. It collects that
 state and anchors it. Then it publishes a snapshot into POSIX shared memory at
 `/ptp_uncertainty`.
 
 On the other side, `libptp_unc.so` maps that shared memory and, at *read time*,
-extrapolates the live bound. Your application links the library and just asks for
+extrapolates the live bound. The application links the library and just asks for
 a number. [PAUSE]
 
-Two design choices worth calling out: applications need *no* PTP code and *no*
-direct PHC access. And they get a *live* bound, extrapolated to now — not just the
+Two design choices worth calling out: applications need *no* PTP 
+And they get a *live* bound, extrapolated to now — not just the
 last stale offset snapshot.
 
 ### Slide 26 — What the daemon collects  (28:45)
 
 Concretely, the daemon collects offset, delay, and steps removed from
-`CURRENT_DATA_SET`; the port state and sync interval from `PORT_DATA_SET`; the
-ingress time and grandmaster ID from `TIME_STATUS_NP`; and optionally the PHC
-index.
+`CURRENT_DATA_SET`; PMC message the port state and sync interval from
+ `PORT_DATA_SET`; the ingress time and grandmaster ID from `TIME_STATUS_NP`;
+  the PHC index from a ptp4l-custom PORT_HWCLOCK_NP.
 
 A couple of niceties: it can derive its poll interval automatically from the sync
 interval — polling at least twice the sync rate — and it can autodetect the PHC
@@ -465,9 +468,7 @@ index. You point it at the socket and it configures itself.
 
 The client side is four calls.
 
-You open a handle. Then `ptp_unc_get` gives you the uncertainty *at now*. Or
-`ptp_unc_get_at` gives it to you at a specific monotonic timestamp — useful when
-you captured an event earlier and want the bound *as it was then*.
+You open a handle. Then `ptp_unc_get` gives you the uncertainty *at now*.
 
 Out of that you get `total_uncertainty_ns`, the `drift_ns` component broken out,
 whether you're synchronized, whether `ptp4l` is connected, and `age_ns`. [PAUSE]
@@ -512,13 +513,14 @@ Two honest differences, and they're the interesting part. First, the *bound*:
 Meta computes a statistical, sigma-based window and targets six-nines certainty; I
 default to a conservative worst-case bound. Both are defensible — two points on
 the same spectrum. Second, *holdover*: Meta estimates the drift rate empirically,
-from the recent history of the clock's frequency adjustments, and then calibrates
-it with temperature and vibration telemetry. I use a single configured drift
-bound. [PAUSE]
+from the recent history of the clock's frequency adjustments, and I use a single 
+configured drift bound. [PAUSE]
 
-Hold onto that second difference. Meta had to bring their own temperature and
-vibration data to estimate oscillator drift — because nothing in the stack hands
-it to you. That's not my opinion; that's the largest PTP deployment in the world
+Hold onto that second difference. Unfortunately, to get the reliable bounds, you'd have
+to bring the own temperature and vibration data to estimate oscillator drift — because nothing in the stack hands it to you. Hence the simplified approach was chosen as
+giving you the data you can reliably use at scale with a minimum "investment"
+
+ That's not my opinion; that's the largest PTP deployment in the world
 telling you what's missing. We come back to it in the last section.
 
 ---
@@ -541,8 +543,7 @@ better or worse oscillator.
 *(Show the sawtooth plot.)*
 
 Here it is. This is a real capture. That dashed line sitting almost on the axis is
-the offset floor — just tens of nanoseconds. Remember, PTP compensates the path
-delay, so it's gone; there's essentially nothing under the curve but offset.
+the offset floor — just tens of nanoseconds.
 [PAUSE]
 
 Now watch the blue line. Every second, a sync message arrives, and the

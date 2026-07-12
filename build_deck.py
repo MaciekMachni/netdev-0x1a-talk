@@ -740,7 +740,7 @@ def build(path):
     statement_slide(
         prs,
         "total_uncertainty_ns = |offset| + drift + clock_resolution + capture_point_error",
-        "Example: 50 ns drift + 8 ns resolution + 40 ns capture \u2248 98 ns bound.",
+        "Example: 12 ns offset + 50 ns drift + 8 ns resolution + 40 ns capture \u2248 110 ns bound.",
         22,
         notes="Three residual terms after the offset correction is applied: drift "
               "(staleness), clock resolution (tick granularity), and capture-point "
@@ -790,7 +790,7 @@ def build(path):
         [["offset, delay, steps removed", "CURRENT_DATA_SET"],
          ["port state, sync interval", "PORT_DATA_SET"],
          ["ingress time, grandmaster id", "TIME_STATUS_NP"],
-         ["PHC index (optional)", "PORT_HWCLOCK_NP"]],
+         ["PHC index", "PORT_HWCLOCK_NP"]],
         26, kicker="Implementation",
         notes="Auto features: poll interval derived from logSyncInterval (>=2x "
               "sync rate); optional PHC index autodetection.")
@@ -802,7 +802,6 @@ def build(path):
          "  struct ptp_uncertainty u;",
          "",
          "  ptp_unc_get(h, &u);            // uncertainty at now",
-         "  ptp_unc_get_at(h, &u, t_mono); // at a given monotonic t",
          "",
          "  // u.total_uncertainty_ns, u.drift_ns",
          "  // u.is_synchronized, u.ptp4l_connected",
