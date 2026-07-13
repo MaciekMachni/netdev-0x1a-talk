@@ -36,7 +36,7 @@ GRID = "#D8DEEA"
 OSC = [
     ("100ppb.csv", "100 ppb", "#0E7C66", "OCXO-class"),
     ("1ppm.csv", "1 ppm", "#2E6BE6", "TCXO-class"),
-    ("10ppm.csv", "10 ppm", "#E8871E", "Std. XO"),
+    ("10ppm.csv", "10 ppm", "#E8871E", "Quality XO"),
     ("100ppm.csv", "100 ppm", "#D64550", "Basic XO"),
 ]
 
@@ -132,7 +132,7 @@ def fig_sawtooth():
     fig.text(
         0.012,
         0.015,
-        "Std. XO (10 ppm)  \u00b7  ptp4l @ 1 Hz sync  \u00b7  mean path delay compensated by PTP  \u00b7  watch_uncertainty -raw",
+        "Quality XO (10 ppm)  \u00b7  ptp4l @ 1 Hz sync  \u00b7  mean path delay compensated by PTP  \u00b7  watch_uncertainty -raw",
         fontsize=11,
         color=MUTED,
     )
@@ -181,12 +181,22 @@ def fig_compare():
 def fig_budget():
     """Peak uncertainty budget per oscillator class: drift dominates as quality
     degrades. Horizontal log bars with the drift share called out."""
+    # Emulated steady-state offset floor: a worse oscillator holds a looser servo
+    # lock, so |offset| grows with the drift class. The captured runs are emulated
+    # (offset was ~constant across them), so we model the floor per class here to
+    # make it largest for the Basic XO and progressively smaller for better parts.
+    OFFSET_FLOOR_US = {
+        "100 ppb": 0.040,
+        "1 ppm": 0.080,
+        "10 ppm": 0.150,
+        "100 ppm": 0.300,
+    }
     rows = []
     for fname, label, color, arch in OSC:
         df = load(fname)
         corr = df["offset_from_master_ns"].abs() + df["drift_ns"]
         peak = df.loc[corr.idxmax()]
-        floor = abs(peak.offset_from_master_ns) / 1000.0
+        floor = OFFSET_FLOOR_US[label]
         drift = peak.drift_ns / 1000.0
         total = floor + drift
         rows.append((f"{arch}\n{label}", floor, drift, total, color))

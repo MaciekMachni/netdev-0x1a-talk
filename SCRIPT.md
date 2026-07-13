@@ -256,7 +256,7 @@ this; the grandmaster *advertises* it, and it gives us a bound on how good the
 source is. Second, the *offset from* that grandmaster — and this one we *do*
 measure, locally, from the t1–t4 timestamp exchange. That measured offset is the
 `|offset|` term that goes straight into the bound. One is a quality we're told; the
-other is an offset we compute — keep them separate. (And `stepsRemoved` is 
+other is an offset we compute — keep them separate. (And `stepsRemoved` is
 the hop count, the number of boundary clocks between the
 grandmaster, for which we may also want to assume some static value.)
 
@@ -402,8 +402,8 @@ we leave it out and treat it as a known gap.
 We can also assign some static value per hop and use that as a measure of additional
 error for each node, the PTP packet had to go between the GM and us.
 
-A worked number: 12 nanoseconds offset, 50 nanoseconds of drift, 
-8 nanoseconds of resolution, and about 40 nanoseconds of 
+A worked number: 12 nanoseconds offset, 50 nanoseconds of drift,
+8 nanoseconds of resolution, and about 40 nanoseconds of
 capture-point error — call it a hundred ten bound. That
 total is the half-width of the interval you attach to your timestamp.
 
@@ -449,7 +449,7 @@ On the other side, `libptp_unc.so` maps that shared memory and, at *read time*,
 extrapolates the live bound. The application links the library and just asks for
 a number. [PAUSE]
 
-Two design choices worth calling out: applications need *no* PTP 
+Two design choices worth calling out: applications need *no* PTP
 And they get a *live* bound, extrapolated to now — not just the
 last stale offset snapshot.
 
@@ -513,7 +513,7 @@ Two honest differences, and they're the interesting part. First, the *bound*:
 Meta computes a statistical, sigma-based window and targets six-nines certainty; I
 default to a conservative worst-case bound. Both are defensible — two points on
 the same spectrum. Second, *holdover*: Meta estimates the drift rate empirically,
-from the recent history of the clock's frequency adjustments, and I use a single 
+from the recent history of the clock's frequency adjustments, and I use a single
 configured drift bound. [PAUSE]
 
 Hold onto that second difference. Unfortunately, to get the reliable bounds, you'd have
@@ -564,7 +564,7 @@ scale, because the spread is enormous.
 Every one of these lines rides on the same tiny offset floor — tens of
 nanoseconds — because the path delay is compensated away. Same offset, same
 network. The only difference is the drift bound: an OCXO-class part down at
-100 parts per billion, a TCXO at 1 ppm, a standard crystal at 10 ppm, and a basic
+100 parts per billion, a TCXO at 1 ppm, a quality crystal at 10 ppm, and a basic
 crystal at 100 ppm. [PAUSE]
 
 Look at the separation. The OCXO barely leaves the floor — its line stays down in
@@ -578,7 +578,7 @@ One more view — the worst-case moment in each run, broken into its two parts: 
 residual offset in gray, and the drift term in color.
 
 For the OCXO, offset and drift are comparable — the whole budget is under three
-hundred nanoseconds either way. But move to a standard crystal and drift is
+hundred nanoseconds either way. But move to a quality crystal and drift is
 *ninety-nine percent* of the budget; on the basic crystal it's essentially all
 drift. [PAUSE]
 
@@ -641,24 +641,29 @@ Part eight, and I'll keep it short and honest.
 
 ### Slide 38 — Ingredients, not the recipe  (39:40)
 
-Linux gives us the ingredients. On the left: `SO_TIMESTAMPING` for hardware and
-software timestamps; `PTP_SYS_OFFSET` to cross-reference the PHC against the
-system clock; the `ptp4l` management socket for offset, delay, and ingress; and
-`/dev/ptpN` for frequency adjustment.
+Let me correct a framing you'll often hear — including from me earlier. The kernel
+gives us *ingredients*. On the left: `SO_TIMESTAMPING` for hardware and software
+timestamps; `PTP_SYS_OFFSET` to cross-reference the PHC against the system clock;
+and `/dev/ptpN` for frequency adjustment and external timestamps.
 
-But look at the right column — what's *missing*. The kernel does not hand you the
-oscillator's stability, its Allan deviation. It doesn't tell you the age of the
-factory calibration or the temperature model. It doesn't give you a bound on PHC
-read latency. And there is no single, standardized "staleness since the last
-discipline event" you can just query. [PAUSE]
+But notice what is *not* on that list: the `ptp4l` management socket. That's the
+whole point — it isn't a kernel API at all. It lives in *userspace*. So the one
+thing we actually need — the disciplined PTP sync state — exists only inside
+ptp4l, and the only way to get it today is to talk to that daemon out-of-band.
 
-This is exactly the conclusion in my abstract: the *frequency offset* is
-available, but oscillator stability and calibration staleness are not. So a
-precise bound today still depends on operator configuration and hardware-specific
-knowledge. And you just *saw* how much that missing term matters — the crystal
-alone drove the bound from a fraction of a microsecond to over a hundred. I'm not
-going to oversell the automation — the kernel gives you the ingredients, but you
-still have to bring part of the recipe.
+That's the gap I want to close. The right column is the piece I'd add: a small,
+standard sync-state that the *kernel* exposes, built on the very structure this
+daemon already publishes. It carries `master_offset_ns` — the offset at the last
+sync; `ingress_time_ns` — the PHC timestamp of that sync, which is our drift
+anchor; `max_drift_ppb` — the worst-case drift bound; and the grandmaster identity
+with `steps_removed`. Port state is optional — you can reason it out of the
+others. [PAUSE]
+
+With just those few fields exposed by the kernel, any application could compute a
+live uncertainty bound without linking a PTP stack or scraping a daemon. The
+harder physical unknowns — oscillator stability, calibration age — still need
+operator config; I'm not going to oversell that. But the sync-state itself is a
+small, concrete thing to build, and it's the missing recipe.
 
 ---
 

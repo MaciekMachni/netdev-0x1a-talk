@@ -91,7 +91,7 @@ only `max_drift_ppb` varied to model each oscillator class):
 
 - `results/100ppb.csv` — OCXO-class, 100 ppb, peak ~0.3 µs (drift ~43%)
 - `results/1ppm.csv`   — TCXO-class, 1 ppm, peak ~1.3 µs (drift ~88%)
-- `results/10ppm.csv`  — Std. XO, 10 ppm, peak ~12 µs (drift ~99%)
+- `results/10ppm.csv`  — Quality XO, 10 ppm, peak ~12 µs (drift ~99%)
 - `results/100ppm.csv` — Basic XO, 100 ppm, peak ~120 µs (drift ~100%)
 
 If you still want a live demo, keep the fallback ready:

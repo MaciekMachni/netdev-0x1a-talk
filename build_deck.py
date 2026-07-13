@@ -930,26 +930,30 @@ def build(path):
     # 32 — have vs missing
     two_col_slide(
         prs, "The kernel gives ingredients, not the recipe",
-        "Available today",
+        "Kernel today: raw ingredients",
         ["SO_TIMESTAMPING \u2014 HW/SW RX/TX timestamps",
          "PTP_SYS_OFFSET(_EXTENDED) \u2014 PHC \u2194 system",
-         "ptp4l mgmt socket \u2014 offset, delay, ingress",
-         "/dev/ptpN \u2014 freq adjust, ext timestamps"],
-        "Not exposed / not standardized",
-        ["Oscillator stability (Allan deviation)",
-         "Calibration age + temperature model",
-         "Per-read PHC access-latency bound",
-         "A unified \u201cstaleness since last discipline\u201d"],
+         "/dev/ptpN \u2014 freq adjust, ext timestamps",
+         "sync state lives only in ptp4l userspace"],
+        "Missing: a kernel PTP sync-state",
+        ["master_offset_ns \u2014 offset at last sync",
+         "ingress_time_ns \u2014 PHC time of sync (drift anchor)",
+         "max_drift_ppb \u2014 worst-case drift bound",
+         "gm_id + steps_removed \u2014 source & hop count",
+         "port state \u2014 optional (derivable)"],
         38, kicker="Kernel limits",
-        notes="Matches the abstract's conclusion: frequency offset is available, "
-              "but oscillator stability and calibration staleness are not \u2014 so "
-              "precise bounds still need operator config and hardware knowledge. "
-              "The measurements just proved how much that missing oscillator term "
-              "matters. And Meta's fbclock is the existence proof: to run holdover "
-              "in production they estimate drift from PHC frequency-adjustment "
-              "history and calibrate it with temperature and vibration telemetry "
-              "\u2014 exactly the data the kernel does not hand you. Do not oversell "
-              "automation.")
+        notes="Correction to the usual framing: the ptp4l management socket is not "
+              "a kernel API \u2014 it lives in userspace. The kernel exposes raw "
+              "ingredients (SO_TIMESTAMPING, PTP_SYS_OFFSET, /dev/ptpN) but no "
+              "disciplined PTP sync state, so today the only way to get the offset, "
+              "the sync ingress anchor, the drift bound and the grandmaster identity "
+              "is to talk to ptp4l out-of-band. The piece I want to add is exactly "
+              "that state, exposed by the kernel and built on the ptp-uncertainty "
+              "IPC segment: master_offset_ns, ingress_time_ns, max_drift_ppb, gm_id "
+              "and steps_removed \u2014 with port state optional since it is derivable "
+              "from the rest. Those few fields are what let any app compute a live "
+              "bound without linking a PTP stack. (The harder physical unknowns \u2014 "
+              "oscillator stability, calibration age \u2014 still need operator config.)")
 
     # ---- CLOSE ----
     content_slide(
