@@ -180,6 +180,69 @@ def fig_compare():
     return out
 
 
+def fig_budget_linear():
+    """fig_budget on a LINEAR x-axis: the loosest drift bound dominates and the
+    tighter assumptions collapse to slivers near the axis."""
+    OFFSET_FLOOR_US = {
+        "100 ppb": 0.040,
+        "1 ppm": 0.080,
+        "10 ppm": 0.150,
+        "100 ppm": 0.300,
+    }
+    rows = []
+    for fname, label, color, arch in OSC:
+        df = load(fname)
+        corr = df["offset_from_master_ns"].abs() + df["drift_ns"]
+        peak = df.loc[corr.idxmax()]
+        floor = OFFSET_FLOOR_US[label]
+        drift = peak.drift_ns / 1000.0
+        total = floor + drift
+        rows.append((f"{arch}\n{label}", floor, drift, total, color))
+
+    xmax = max(r[3] for r in rows)
+    fig, ax = plt.subplots(figsize=(12.4, 6.0))
+    ypos = range(len(rows))
+    for i, (name, floor, drift, total, color) in enumerate(rows):
+        ax.barh(i, floor, color=MUTED, alpha=0.55, zorder=3,
+                label="|offset_est| (residual)" if i == 0 else None)
+        ax.barh(i, drift, left=floor, color=color, zorder=3,
+                label="attributed drift  (age \u00d7 D_max)" if i == 0 else None)
+        share = 100.0 * drift / total
+        ax.text(total + xmax * 0.012, i, f"{total:,.1f} \u00b5s  (drift {share:.0f}%)",
+                va="center", ha="left", fontsize=12.5, fontweight="bold", color=INK)
+
+    ax.set_yticks(list(ypos))
+    ax.set_yticklabels([r[0] for r in rows])
+    ax.invert_yaxis()
+    ax.set_xlim(0, xmax * 1.26)
+    ax.set_xlabel("Peak envelope  |offset_est| + age\u00d7D_max  (\u00b5s, linear)")
+    ax.set_title("Same peaks, linear scale: the loosest drift bound dwarfs the rest", pad=40)
+    ax.grid(True, axis="x", alpha=0.30, linestyle="--", color=GRID)
+    ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=2,
+              framealpha=0.95, frameon=False)
+    ax.annotate(
+        "100 ppb / 1 ppm / 10 ppm\ncollapse to slivers near 0",
+        xy=(6.0, 2.05),
+        xytext=(30.0, 1.2),
+        fontsize=13,
+        color=INK,
+        bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="none", alpha=0.85),
+        arrowprops=dict(arrowstyle="->", color=INK, lw=1.5),
+    )
+    fig.text(
+        0.012,
+        0.015,
+        "Linear x-axis. Same host & ptp4l, four configured D_max \u2014 100 ppm (~120 \u00b5s) makes the tighter bounds look flat.",
+        fontsize=11,
+        color=MUTED,
+    )
+    fig.tight_layout(rect=[0, 0.03, 1, 1])
+    out = os.path.join(ASSETS, "fig_budget_linear.png")
+    fig.savefig(out, facecolor="white")
+    plt.close(fig)
+    return out
+
+
 def fig_budget():
     """Peak uncertainty budget per oscillator class: drift dominates as quality
     degrades. Horizontal log bars with the drift share called out."""
@@ -241,7 +304,7 @@ def fig_budget():
 
 def main():
     os.makedirs(ASSETS, exist_ok=True)
-    outs = [fig_sawtooth(), fig_compare(), fig_budget()]
+    outs = [fig_sawtooth(), fig_compare(), fig_budget(), fig_budget_linear()]
     for o in outs:
         print(f"wrote {o}")
 
