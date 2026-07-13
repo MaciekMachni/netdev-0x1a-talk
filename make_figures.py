@@ -89,7 +89,7 @@ def fig_sawtooth():
         color=ACCENT,
         linewidth=2.4,
         zorder=3,
-        label="Uncertainty  = |offset| + drift",
+        label="Uncertainty envelope  \u2248 |offset_est| + age\u00b7D_max",
     )
     ax.axhline(
         floor,
@@ -97,7 +97,7 @@ def fig_sawtooth():
         linestyle="--",
         linewidth=1.6,
         zorder=2,
-        label=f"|offset| floor \u2248 {floor * 1000:.0f} ns  (path delay compensated by PTP)",
+        label=f"|offset_est| floor \u2248 {floor * 1000:.0f} ns  (residual after path-delay compensation)",
     )
     ax.fill_between(
         win["elapsed_s"], 0, floor, color=MUTED, alpha=0.07, zorder=0
@@ -105,26 +105,28 @@ def fig_sawtooth():
 
     # annotate one ramp + one reset
     ax.annotate(
-        "drift (staleness) ramps\nbetween sync messages",
-        xy=(1.6, 9.0),
-        xytext=(2.4, 12.6),
+        "drift bound ramps\n(age \u00d7 D_max)",
+        xy=(1.15, 8.2),
+        xytext=(0.15, 12.4),
         fontsize=13,
         color=INK,
+        bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="none", alpha=0.85),
         arrowprops=dict(arrowstyle="->", color=INK, lw=1.5),
     )
     ax.annotate(
-        "reset at each\nsync ingress",
+        "bound resets at\neach sync ingress",
         xy=(3.05, 3.2),
         xytext=(4.2, 6.6),
         fontsize=13,
         color=TEAL,
         fontweight="bold",
+        bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="none", alpha=0.85),
         arrowprops=dict(arrowstyle="->", color=TEAL, lw=1.5),
     )
 
-    ax.set_title("Staleness is real: a point measurement becomes a growing interval", pad=14)
+    ax.set_title("The uncertainty bound grows between syncs, resets at each ingress", pad=14)
     ax.set_xlabel("Elapsed time (s)")
-    ax.set_ylabel("Uncertainty (\u00b5s)")
+    ax.set_ylabel("Uncertainty envelope (\u00b5s)")
     ax.set_ylim(0, df[df["elapsed_s"] <= 12.0]["total_us"].max() * 1.18)
     ax.set_xlim(0, 12)
     ax.grid(True, alpha=0.35, linestyle="--", color=GRID)
@@ -132,7 +134,7 @@ def fig_sawtooth():
     fig.text(
         0.012,
         0.015,
-        "Quality XO (10 ppm)  \u00b7  ptp4l @ 1 Hz sync  \u00b7  mean path delay compensated by PTP  \u00b7  watch_uncertainty -raw",
+        "Configured drift bound D_max = 10 ppm  \u00b7  same host, ptp4l @ 1 Hz  \u00b7  estimated path delay compensated  \u00b7  watch_uncertainty -raw",
         fontsize=11,
         color=MUTED,
     )
@@ -144,7 +146,7 @@ def fig_sawtooth():
 
 
 def fig_compare():
-    """Same PTP quality, four oscillator classes: drift term sets the envelope."""
+    """Same PTP state, four configured drift bounds: the bound sets the envelope."""
     fig, ax = plt.subplots(figsize=(12.4, 6.0))
     for fname, label, color, arch in OSC:
         df = load(fname)
@@ -157,17 +159,17 @@ def fig_compare():
             label=f"{arch}  ({label})",
         )
     ax.set_yscale("log")
-    ax.set_title("Same PTP sync, different oscillator: drift sets the envelope", pad=14)
+    ax.set_title("Same PTP state, four configured drift bounds: the bound sets the envelope", pad=14)
     ax.set_xlabel("Elapsed time (s)")
-    ax.set_ylabel("Uncertainty  |offset|+drift  (\u00b5s, log scale)")
+    ax.set_ylabel("Uncertainty envelope  |offset_est| + age\u00b7D_max  (\u00b5s, log)")
     ax.set_xlim(0, 12)
     ax.set_ylim(0.02, 300)
     ax.grid(True, which="both", alpha=0.30, linestyle="--", color=GRID)
-    ax.legend(loc="center right", framealpha=0.95, title="Worst-case drift bound")
+    ax.legend(loc="center right", framealpha=0.95, title="Configured drift bound")
     fig.text(
         0.012,
         0.015,
-        "Path delay is compensated by PTP; the residual floor is just |offset| (tens of ns). Only max_drift_ppb changes.",
+        "Same host & ptp4l; only the configured max_drift_ppb changes. Floor is the |offset_est| residual (tens of ns); estimated path delay compensated.",
         fontsize=11,
         color=MUTED,
     )
@@ -205,9 +207,9 @@ def fig_budget():
     ypos = range(len(rows))
     for i, (name, floor, drift, total, color) in enumerate(rows):
         ax.barh(i, floor, color=MUTED, alpha=0.55, zorder=3,
-                label="|offset| (residual)" if i == 0 else None)
+                label="|offset_est| (residual)" if i == 0 else None)
         ax.barh(i, drift, left=floor, color=color, zorder=3,
-                label="drift / staleness" if i == 0 else None)
+                label="attributed drift  (age \u00d7 D_max)" if i == 0 else None)
         share = 100.0 * drift / total
         ax.text(total * 1.08, i, f"{total:,.1f} \u00b5s  (drift {share:.0f}%)",
                 va="center", ha="left", fontsize=12.5, fontweight="bold", color=INK)
@@ -216,17 +218,17 @@ def fig_budget():
     ax.set_yticklabels([r[0] for r in rows])
     ax.invert_yaxis()
     ax.set_xscale("log")
-    # x-axis floor must sit below the smallest |offset| (~46 ns = 0.046 us),
+    # x-axis floor must sit below the smallest |offset_est| (~40 ns = 0.040 us),
     # otherwise the grey offset segment gets clipped to zero width (e.g. Basic XO).
     ax.set_xlim(0.01, 900)
-    ax.set_xlabel("Peak uncertainty  |offset|+drift  (\u00b5s, log scale)")
-    ax.set_title("Oscillator choice sets the bound: ~0.3 \u00b5s \u2192 ~120 \u00b5s", pad=14)
+    ax.set_xlabel("Peak envelope  |offset_est| + age\u00d7D_max  (\u00b5s, log)")
+    ax.set_title("Configured drift bound sets the envelope: ~0.3 \u00b5s \u2192 ~120 \u00b5s", pad=14)
     ax.grid(True, which="both", axis="x", alpha=0.30, linestyle="--", color=GRID)
     ax.legend(loc="upper right", framealpha=0.95)
     fig.text(
         0.012,
         0.015,
-        "Worst-case moment in each run \u00b7 mean path delay compensated by PTP \u00b7 drift grows with oscillator drift rate.",
+        "Worst-case moment \u00b7 same host, four configured D_max \u00b7 estimated path delay compensated \u00b7 envelope grows with the configured drift bound.",
         fontsize=11,
         color=MUTED,
     )

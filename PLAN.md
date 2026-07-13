@@ -31,7 +31,7 @@ bound.
 | 4 | Anatomy of uncertainty | 7 min | 12–18 | Every source that adds error, incl. staleness |
 | 5 | Turning PTP into a bound | 6 min | 19–23 | Datasets → formula → trust mapping |
 | 6 | A model implementation | 6 min | 24–29 | The `ptp-uncertainty` daemon + API + failure + industry validation |
-| 7 | Measured on real oscillators | 4 min | 30–33 | Real captures: drift/staleness across crystals |
+| 7 | Model behavior across oscillator bounds | 4 min | 30–33 | Model sweep: envelope grows with the configured drift bound |
 | 8 | The full story: fast time + uncertainty | 3 min | 34–36 | Bridge to the prior fast-PHC-access talk |
 | 9 | Kernel APIs: have vs missing | 2 min | 37–38 | Honest limits; why manual config remains |
 | 10 | Takeaways & Q&A | ~ | 39–40 | Close and open the floor |
@@ -63,9 +63,10 @@ slide (18), the formula (22), the Meta validation (29), or the sawtooth capture 
    interval ("Window of Uncertainty" `[earliest, latest]`) with the same
    daemon+shmem+library shape at fleet scale. Two honest differences: statistical
    vs worst-case bound, and empirical drift+telemetry vs a configured drift bound.
-   6.5. **Evidence** — Real captures from the daemon across four oscillator classes
-   (100 ppb / 1 ppm / 10 ppm / 100 ppm) show the sawtooth of staleness and prove
-   the drift term — not PTP — sets the uncertainty envelope (~0.3 µs → ~120 µs).
+   6.5. **Model sweep** — Same host and ptp4l, four *configured* drift bounds
+   (100 ppb / 1 ppm / 10 ppm / 100 ppm) — oscillator *assumptions*, not measured
+   crystals. The sawtooth shows the bound growing as age × D_max and resetting at
+   ingress; the assumed drift bound sets the envelope (~0.3 µs → ~120 µs).
 7. **Payoff** — The prior talk made reading the clock *fast* (cheap userspace
    access to the PHC, avoiding syscall/PCIe overhead); this talk puts an *error
    bar* on that time. Together they are the full story: fast access to the time
@@ -78,7 +79,7 @@ slide (18), the formula (22), the Meta validation (29), or the sawtooth capture 
 
 ## Block 7 figures = the demo, pre-recorded
 
-Block 7 (slides 30–33) shows real captures instead of a live demo, so conference
+Block 7 (slides 30–33) shows a pre-recorded model sweep instead of a live demo, so conference
 Wi-Fi cannot break it. The figures are regenerated from the CSVs in `../results`:
 
 ```bash
@@ -106,10 +107,15 @@ sudo ./bin/ptp_unc_dmn --ptp4l-socket /run/ptp4l -A -v
 
 ## Facts grounded in the repo (kept accurate on slides)
 
-- Formula (talk): `total_uncertainty_ns = |offset_from_master_ns| + drift_ns`.
-  Mean path delay is measured and compensated by PTP, so it is **excluded** (adding
-  it double-counts). *Note:* the current daemon/README still add `|mean_path_delay_ns|`;
-  the figures recompute without it — update the daemon to match the talk.
+- Model (talk): `U_event = U_clock + U_capture`, where `U_clock = |offset_est| +
+  U_est + age×D_max + res/2`. offsetFromMaster is an *estimate* of bias (enters as
+  |offset_est| plus its estimation uncertainty U_est), not a bound; the estimated
+  mean path delay is compensated but its estimation error + asymmetry fold into
+  U_est; drift is an *attributed* residual-frequency bound (age×D_max), not measured
+  drift; capture uncertainty is the application's, added on top. State assumptions
+  (|freq err|≤D_max, |asymmetry|≤A_max, |offset-est err|≤U_est). *Note:* the current
+  daemon computes a simpler snapshot `|offset| + |mean_path_delay|`; the talk presents
+  the rigorous layered form — reconcile the daemon later.
 - `drift_ns = (now_mono − ingress_mono) × max_drift_ppb / 1e9`.
 - Default `max_drift_ppb = 100000` (100 ppm); default poll 1000 ms; auto-poll ≥ 2× sync rate.
 - Datasets read: `CURRENT_DATA_SET`, `PORT_DATA_SET`, `TIME_STATUS_NP`, `PORT_HWCLOCK_NP`.
@@ -130,18 +136,21 @@ sudo ./bin/ptp_unc_dmn --ptp4l-socket /run/ptp4l -A -v
 
 ## Anticipated Q&A
 
-- **Is `U` a statistical confidence interval?** No — a conservative worst-case bound
-  by default; you can layer statistics on top.
+- **Is `U` a statistical confidence interval?** No — a computed uncertainty
+  envelope under stated assumptions (not a proven upper bound: asymmetry and
+  estimator error are omitted); you can layer statistics on top.
 - **Why 100 ppm default?** Safe generic bound; tune per oscillator/NIC datasheet.
-  The measurement slides show exactly what tuning it buys you (~45× range).
-- **Did you change the crystal between runs?** No — same host and network; only
-  the daemon's `max_drift_ppb` bound changed, which is how you'd model each
-  oscillator class. It isolates the drift term cleanly.
+  The model-sweep slides show exactly what tuning that assumed bound buys (~45× range).
+- **Did you actually test four oscillators?** No — same host and ptp4l; only the
+  daemon's configured `max_drift_ppb` changed. The plots are the model's output
+  under four oscillator *assumptions*, isolating the attributed-drift term — not
+  four measured crystals.
 - **How does this compare to Meta's fbclock?** Same idea and same architecture
   (daemon + shmem + client library returning an interval). fbclock uses a
   statistical sigma-based window and estimates holdover drift from PHC frequency
-  history plus temperature/vibration telemetry; this project uses a conservative
-  worst-case bound and a configured drift rate. fbclock is the production existence
+  history plus temperature/vibration telemetry; this project uses an operational
+  envelope under stated assumptions with a configured drift bound. fbclock is the
+  production existence
   proof; this is the minimal, readable open take that also surfaces the kernel gaps.
 - **Does this replace PTP?** No — it consumes PTP state; it does not discipline clocks.
 - **How does it relate to NTP root dispersion?** Same philosophy (explicit error

@@ -568,16 +568,20 @@ def build(path):
     two_col_slide(
         prs, "What uncertainty is \u2014 and is not",
         "U IS",
-        ["A conservative bound on clock error, right now",
-         "Derived from measurable sync state + configured limits",
+        ["A computed uncertainty envelope, right now",
+         "Derived from sync state + explicitly stated assumptions",
          "An explicit input to application logic"],
         "U IS NOT",
         ["A statistical confidence interval (unless you add stats)",
-         "A substitute for good clock design",
+         "A proven upper bound \u2014 some terms are omitted",
          "Zero just because PTP reports \u201cSLAVE\u201d"],
         11, kicker="The model",
-        notes="Emphasize conservatism: we want a defensible upper bound, not a "
-              "best guess.")
+        notes="Be honest about the claim. We compute an operational uncertainty "
+              "envelope under stated assumptions (|freq error| <= D_max, "
+              "|asymmetry| <= A_max, bounded offset-estimation error), not a proven "
+              "mathematical upper bound on true clock error \u2014 because we omit terms "
+              "like link asymmetry. Call it an envelope, state the assumptions, and "
+              "it becomes defensible.")
 
     # ---- PART 3 ----
     section_slide(prs, "Part 3", "Where does uncertainty come from?", 12)
@@ -599,112 +603,122 @@ def build(path):
     # 14 — the full budget of sources
     table_slide(
         prs, "The uncertainty budget: every source",
-        ["Source of error", "What it contributes", "In the bound?"],
+        ["Source of error", "What it contributes", "Where it lands"],
         [["Grandmaster class",
           "advertised GM quality (clockClass / accuracy)",
-          "error bound we are told"],
+          "assumed bound"],
          ["Offset from grandmaster",
-          "our offset, measured from the t1\u2013t4 exchange",
-          "yes \u2014 |offset| term"],
-         ["Local oscillator drift",
-          "free-run drift between syncs (ppb\u2013ppm)",
-          "yes \u2014 drift term"],
+          "estimated bias, from the t1\u2013t4 exchange",
+          "U_clock: |offset_est| + U_est"],
+         ["Residual oscillator drift",
+          "freq error left after discipline (\u2264 D_max)",
+          "U_clock: age \u00d7 D_max"],
          ["Holdover",
-          "drift with no discipline (ptp4l down)",
-          "yes \u2014 anchor held, drift grows"],
-         ["Clock read delays",
-          "latency to read the PHC / clock_gettime",
-          "partial \u2014 capture-point dependent"],
+          "no discipline (ptp4l down) \u2014 age keeps growing",
+          "U_clock: anchor held"],
          ["Clock resolution",
           "granularity of the timestamp tick",
-          "bounded by tick size"],
-         ["Accumulated path-element delays",
-          "residence + queueing over each hop",
-          "compensated by PTP (mean)"],
+          "U_clock: \u00bd tick"],
+         ["Path-element delays",
+          "estimated mean is compensated by PTP",
+          "residual est. error \u2192 U_est"],
          ["Link asymmetry",
           "up and down paths differ",
-          "unmodeled \u2014 conservative gap"]],
+          "unmodeled \u2192 folds into U_est"],
+         ["Event capture point",
+          "how the app stamped the event (HW/SW)",
+          "U_capture (application)"]],
         14, kicker="Anatomy",
-        notes="A consolidated budget before we zoom into individual layers. Two "
-              "sources come from the source clock itself, and they differ in kind: "
-              "the grandmaster's class (clockClass / clockAccuracy) is an advertised "
-              "bound on the source quality, while the offset from the grandmaster is "
-              "our own value, measured locally from the t1-t4 timestamp exchange \u2014 "
-              "that measured |offset| is what enters the bound. (stepsRemoved is "
-              "neither: just the hop count to the GM.) Two come "
-              "from our local oscillator: its free-run drift between sync messages, "
-              "and holdover when discipline is lost entirely. Two are properties of "
-              "reading the clock: the access latency of a PHC or clock_gettime "
-              "read, and the finite resolution of the tick itself. And two live in "
-              "the network: the delays accumulated across every transparent/"
-              "boundary clock and queue on the path (whose mean PTP measures and "
-              "compensates), and link asymmetry \u2014 the up/down difference PTP cannot "
-              "see, which stays an unmodeled conservative gap. The rest of Part 3 "
-              "drills into the ones that dominate.")
+        notes="A consolidated budget \u2014 and it splits cleanly into two owners. "
+              "U_clock (the daemon/library): the grandmaster's advertised class; the "
+              "offsetFromMaster *estimate* plus U_est, the uncertainty of that "
+              "estimate; the residual frequency error bounded by D_max times age; "
+              "holdover; and a half-tick of clock resolution. The estimated mean "
+              "path delay is compensated by PTP, but its estimation error and link "
+              "asymmetry remain and fold into U_est \u2014 they are not zero. U_capture "
+              "(the application): how the event was actually stamped \u2014 HW vs SW vs a "
+              "converted GPU counter \u2014 which the daemon cannot know. U_event = "
+              "U_clock + U_capture. Everything is an envelope under stated "
+              "assumptions, not a proven upper bound.")
 
     # 15 — oscillator & PHC clock
     content_slide(
         prs, "Layers 1\u20132: oscillator & PHC clock",
-        [("Oscillator (layer 1): TCXO/OCXO stability (ppb), temperature sensitivity, free-run drift", 0),
+        [("Oscillator (layer 1): TCXO/OCXO stability (ppb), temperature sensitivity", 0),
          ("PHC clock (layer 2): the disciplined hardware clock we actually read", 0),
-         ("offsetFromMaster \u2014 offset estimate", 1),
-         ("clock resolution \u2014 granularity of a single tick", 1),
+         ("offsetFromMaster \u2014 an estimate of bias, with its own uncertainty (U_est)", 1),
+         ("clock resolution \u2014 \u00bd-tick quantization (effective, not just clock_getres)", 1),
          ("PHC read latency \u2014 the cost of reading it", 1),
          ("The servo converges toward zero offset; it never mathematically reaches it", 0)],
         15, kicker="Anatomy",
         notes="Layer 1 is the oscillator alone \u2014 stability in ppb and temperature "
-              "sensitivity, free-running drift. Layer 2 is the PHC clock it feeds: "
-              "offsetFromMaster is an estimate (not a truth), and the clock has a "
-              "finite resolution (tick granularity) plus a read latency. PTP "
-              "believes something about your clock; that belief is an input to U, "
-              "not a guarantee.")
+              "sensitivity. Layer 2 is the PHC clock it feeds: offsetFromMaster is "
+              "an *estimate* of the clock bias, not a bound \u2014 it carries its own "
+              "uncertainty U_est from timestamp noise, delay variation and "
+              "asymmetry. Resolution is a quantization term (half a tick), derived "
+              "from the *effective* clock/timestamp granularity, not necessarily the "
+              "clock_getres() API value. PTP believes something about your clock; "
+              "that belief is an input to U, not a guarantee.")
 
     # 16 — capture point table
     table_slide(
-        prs, "Layer 4: where was the timestamp taken?",
-        ["Method", "Typical error", "Notes"],
-        [["PHC hardware RX timestamp", "smallest", "needs NIC/driver support"],
+        prs, "Layer 4: capture point \u2014 a separate uncertainty (U_capture)",
+        ["Where stamped", "Capture uncertainty", "Dominant term"],
+        [["PHC hardware RX timestamp", "smallest", "HW stamp at the wire"],
          ["SO_TIMESTAMPING (software)", "larger", "IRQ + softirq delay"],
-         ["clock_gettime() in app", "largest", "syscall + scheduling jitter"]],
+         ["clock_gettime() in app", "largest", "event\u2192read gap (not clock error)"]],
         16, kicker="Anatomy",
-        notes="Critical for profiling: GPU, NIC and CPU may live in different "
-              "timestamp domains even when 'synced'.")
+        notes="Keep three things distinct: clock uncertainty (U_clock, the bound we "
+              "built), timestamp-capture uncertainty (where/how the stamp was "
+              "taken), and pure observation latency. clock_gettime's syscall latency "
+              "is not itself error \u2014 the returned value is the clock at the read "
+              "point; it only becomes uncertainty when you claim an *earlier* event "
+              "happened at that time, so the event\u2192read gap is what counts. This is "
+              "U_capture, owned by the application and added on top of U_clock \u2014 the "
+              "daemon cannot know how you stamped. Critical for profiling: GPU, NIC "
+              "and CPU may stamp in different domains even when 'synced'.")
 
     # 17 — network & kernel path
     content_slide(
         prs, "Layers 3 & 5: network and kernel path",
         [("Network (layer 3): each hop adds queueing + routing delay", 0),
-         ("PTP compensates the mean path delay \u2014 so it is not in the bound", 1),
-         ("Residual is link asymmetry (up/down differ), accumulating with hop count \u2014 unmodeled", 1),
+         ("PTP compensates the *estimated* mean path delay \u2014 its estimation error remains", 1),
+         ("Residual = asymmetry + delay-estimation error, growing with hops \u2014 folds into U_est", 1),
          ("Kernel path (layer 5): Linux exposes useful data \u2014 but not as one package:", 0),
          ("PTP_SYS_OFFSET / _EXTENDED \u2014 PHC vs system clock", 1),
          ("SO_TIMESTAMPING \u2014 ingress / egress timestamps", 1),
-         ("ptp4l management API \u2014 offset, delay, ingress time", 1)],
+         ("ptp4l management API \u2014 offset, delay, ingress time (userspace)", 1)],
         17, kicker="Anatomy",
         notes="Layer 3 is the network: every hop \u2014 transparent/boundary clocks and "
-              "queues \u2014 adds delay. PTP measures and compensates the mean path "
-              "delay, so it is not in the bound; only the residual up/down asymmetry "
-              "is, it grows with hop count, and we do not get a clean measurement of "
-              "it. Layer 5 is the kernel path: the ingredients exist (PTP_SYS_OFFSET, "
-              "SO_TIMESTAMPING, ptp4l mgmt), but the single 'current uncertainty' "
-              "API does not. Foreshadow the kernel-gaps section.")
+              "queues \u2014 adds delay. PTP measures and compensates the *estimated* mean "
+              "path delay, but the estimation error of that mean does not vanish; "
+              "together with link asymmetry it grows with hop count and folds into "
+              "U_est. We do not get a clean measurement of it. Layer 5 is the kernel "
+              "path: the ingredients exist (PTP_SYS_OFFSET, SO_TIMESTAMPING) but the "
+              "disciplined sync-state only lives in ptp4l userspace, and there is no "
+              "coherent-epoch snapshot. Foreshadow the kernel-gaps section.")
 
     # 18 — staleness (the big one)
     code_slide(
         prs, "Layer that everyone forgets: staleness",
-        ["  Between PTP updates, the clock drifts.",
+        ["  Between syncs, we bound the residual frequency error.",
          "",
-         "  U_drift  =  elapsed_time  x  max_drift_rate",
+         "  U_drift  =  age  x  D_max      (configured bound)",
          "",
          "  Example:  100 ppm  x  1 s   =   100 microseconds",
          "",
-         "  A perfect offset at sync ingress still becomes",
-         "  a GROWING interval a moment later."],
+         "  The PHC is disciplined \u2014 this is an attributed",
+         "  bound, not measured free-run oscillator drift."],
         18, kicker="Anatomy",
-        caption="Staleness turns a point sync measurement into a growing interval "
-                "\u2014 this is what the model daemon implements.",
-        notes="Many tools show offset but never show the interval growing since "
-              "the last correction. This is the term the daemon makes explicit.")
+        caption="Staleness turns a point estimate into a growing envelope \u2014 age \u00d7 "
+                "the configured frequency-error bound, which the daemon makes explicit.",
+        notes="Careful with words here. The PHC is frequency-disciplined by ptp4l, "
+              "so between syncs it does not free-run at the raw XO tolerance \u2014 the "
+              "last correction stays programmed. The honest statement is |residual "
+              "frequency error| <= D_max, so U_drift = age x D_max: an attributed "
+              "bound, not a measurement of oscillator drift. Many tools show offset "
+              "but never show this envelope growing since the last correction; that "
+              "is the term the daemon makes explicit.")
 
     # ---- PART 4 ----
     section_slide(prs, "Part 4", "Turning PTP state into a bound", 19)
@@ -719,36 +733,57 @@ def build(path):
          ["PORT_HWCLOCK_NP", "PHC index (optional)"]],
         20, kicker="PTP \u2192 bound",
         notes="PTP does NOT answer 'what is my application-level timestamp error "
-              "bar?'. We build that on top.")
+              "bar?'. And note these four datasets are polled independently over the "
+              "management interface \u2014 there is no single call that returns a "
+              "coherent clock-state at one observation epoch. We build the bound on "
+              "top, and that missing coherent snapshot is the real kernel gap.")
 
     # 21 — ingress anchor
     code_slide(
         prs, "Ingress time is the drift anchor",
         ["  TIME_STATUS_NP.ingress_time",
-         "     = when the last sync event arrived (PHC time)",
+         "     = PHC time of the last sync event",
          "",
-         "  drift_ns = (time_now - ingress_time)",
-         "                 * max_drift_ppb / 1e9",
+         "  drift = (time_now - ingress_time) * D_max / 1e9",
+         "        = attributed residual freq-error bound",
          "",
-         "  Uncertainty grows between sync messages",
-         "  even when the offset display looks flat."],
+         "  Caveat: offset and ingress come from *different*",
+         "  datasets - no common observation epoch.  <- kernel gap"],
         21, kicker="PTP \u2192 bound",
-        notes="This makes 'staleness' concrete: anchor at ingress, extrapolate at "
-              "read time using a worst-case drift bound.")
+        notes="We anchor at the sync ingress and extrapolate the attributed drift "
+              "bound at read time. Two honesty points: (1) this is a bound on "
+              "residual frequency error while the servo is active, not free-run XO "
+              "drift; (2) offsetFromMaster (CURRENT_DATA_SET) and ingress_time "
+              "(TIME_STATUS_NP) are polled from different management datasets, so we "
+              "are treating two non-atomic observations as one epoch. That snapshot-"
+              "coherence gap is itself a strong argument for the kernel API.")
 
-    # 22 — the formula
-    statement_slide(
-        prs,
-        "total_uncertainty_ns = |offset| + drift + clock_resolution + capture_point_error",
-        "Example: 12 ns offset + 50 ns drift + 8 ns resolution + 40 ns capture \u2248 110 ns bound.",
-        22,
-        notes="Three residual terms after the offset correction is applied: drift "
-              "(staleness), clock resolution (tick granularity), and capture-point "
-              "error (HW vs SW stamp). Mean path delay is measured and compensated "
-              "by PTP inside the offset, so it is not added; the offset itself is a "
-              "correction, not an uncertainty. Residual path asymmetry is real but "
-              "unmodeled here \u2014 a known conservative gap. A practical model, not a "
-              "full Allan-deviation analysis.")
+    # 22 — the model, stated with its assumptions
+    code_slide(
+        prs, "The model \u2014 stated with its assumptions",
+        ["  U_event  =  U_clock            +  U_capture",
+         "              (daemon / library)     (application)",
+         "",
+         "  U_clock  =  |offset_est|         # estimated bias, uncorrected",
+         "           +  U_est               # uncertainty of that estimate",
+         "           +  age x D_max         # attributed drift since anchor",
+         "           +  res / 2             # clock / timestamp quantization",
+         "",
+         "  Assumptions:  |freq err| <= D_max ,  |asymmetry| <= A_max ,",
+         "                |offset-est err| <= U_est"],
+        22, kicker="PTP \u2192 bound",
+        caption="An operational envelope under stated assumptions \u2014 not a proven "
+                "upper bound on true clock error.",
+        notes="The rigorous form. offsetFromMaster is an *estimate* of the clock "
+              "bias, not a bound on it, so it enters as |offset_est| (left "
+              "uncorrected) plus U_est, the uncertainty of that estimate (timestamp "
+              "noise, PDV, residual path-delay-estimation error, asymmetry). The "
+              "drift term is age x D_max \u2014 an attributed bound on residual frequency "
+              "error while the PHC is disciplined, not measured oscillator drift. "
+              "Resolution enters as a +/- half-tick quantization. Capture uncertainty "
+              "is separate: the daemon exposes U_clock; the application adds U_capture "
+              "for how *it* stamped the event. It holds only under the stated "
+              "assumptions \u2014 name them and the envelope is defensible.")
 
     # 23 — port state trust
     table_slide(
@@ -801,18 +836,24 @@ def build(path):
         ["  struct ptp_unc_handle *h = ptp_unc_open();",
          "  struct ptp_uncertainty u;",
          "",
-         "  ptp_unc_get(h, &u);            // uncertainty at now",
+         "  ptp_unc_get(h, &u);            // U_clock at now",
          "",
-         "  // u.total_uncertainty_ns, u.drift_ns",
+         "  // u.total_uncertainty_ns  = U_clock (daemon)",
          "  // u.is_synchronized, u.ptp4l_connected",
          "  // u.age_ns  (snapshot freshness != drift anchor)",
          "",
+         "  U_event = u.total_uncertainty_ns + U_capture;",
          "  ptp_unc_close(h);"],
         27, kicker="Implementation",
-        caption="Clients extrapolate at read time; age_ns (snapshot freshness) is "
-                "distinct from the drift term.",
-        notes="Clarify snapshot age vs drift \u2014 a common confusion and a good "
-              "teaching moment.")
+        caption="The daemon returns U_clock; the application adds its own U_capture "
+                "to get U_event \u2014 the daemon cannot know how you stamped.",
+        notes="Two clarifications. First, the split: total_uncertainty_ns is "
+              "U_clock, the clock-error envelope; the application composes U_event = "
+              "U_clock + U_capture with whatever it knows about how it stamped the "
+              "event (HW timestamp, SO_TIMESTAMPING, GPU counter). Second, age_ns is "
+              "snapshot freshness \u2014 how old the daemon's shared-memory update is \u2014 "
+              "which is distinct from the drift anchor age. A common confusion and a "
+              "good teaching moment.")
 
     # 28 — failure behavior
     code_slide(
@@ -858,41 +899,48 @@ def build(path):
               "at Meta', Meta Engineering, 2022; github.com/facebook/time/fbclock.")
 
     # ---- PART 6 ----
-    section_slide(prs, "Part 6", "Measured on real oscillators", 30)
+    section_slide(prs, "Part 6", "Model behavior across oscillator bounds", 30)
 
-    # 30 — staleness in action (sawtooth)
+    # 30 — bound growth in action (sawtooth)
     image_slide(
-        prs, os.path.join(ASSETS, "fig_sawtooth.png"), 31, kicker="Measured",
-        takeaway="A perfect sync becomes a growing interval within one second \u2014 "
-                 "this is the drift term, captured live.",
-        notes="Real capture from watch_uncertainty against a live ptp4l at 1 Hz "
-              "sync, 10 ppm drift bound. Mean path delay is compensated by PTP, so "
-              "the bound is |offset| + drift; the dashed line is the tiny |offset| "
-              "floor (tens of ns) and the sawtooth is staleness accumulating "
-              "between sync messages and resetting at each ingress. This is slide "
-              "17's claim, measured.")
+        prs, os.path.join(ASSETS, "fig_sawtooth.png"), 31, kicker="Model sweep",
+        takeaway="Between syncs the bound grows as age \u00d7 D_max, then resets at "
+                 "ingress \u2014 this is the model's attributed drift, not measured drift.",
+        notes="Same host and live ptp4l at 1 Hz; the daemon's configured drift "
+              "bound is D_max = 10 ppm. This plots the model output: the uncertainty "
+              "envelope = |offset_est| + age\u00d7D_max. The dashed line is the residual "
+              "|offset_est| floor (tens of ns) after the estimated mean path delay "
+              "is compensated; the sawtooth is the attributed drift bound growing "
+              "between syncs and resetting at each ingress anchor. It demonstrates "
+              "growth of the bound, not actual oscillator drift \u2014 the PHC is "
+              "disciplined, so the physical quantity is residual frequency error, "
+              "which we bound by D_max.")
 
-    # 31 — oscillator comparison
+    # 31 — configured-bound sweep
     image_slide(
-        prs, os.path.join(ASSETS, "fig_compare.png"), 32, kicker="Measured",
-        takeaway="Same PTP quality, four oscillator classes \u2014 the drift bound "
-                 "alone spans two orders of magnitude.",
-        notes="Every run has the same tiny |offset| floor (tens of ns) because path "
-              "delay is compensated by PTP. Only max_drift_ppb changes: 100 ppb "
-              "(OCXO), 1 ppm (TCXO), 10 ppm, 100 ppm. Log scale. The envelope is "
-              "set by staleness, not by PTP.")
+        prs, os.path.join(ASSETS, "fig_compare.png"), 32, kicker="Model sweep",
+        takeaway="Same PTP state, four configured drift bounds \u2014 the assumed "
+                 "D_max alone spans two orders of magnitude.",
+        notes="Same host, same ptp4l state; only the configured max_drift_ppb "
+              "changes: 100 ppb, 1 ppm, 10 ppm, 100 ppm \u2014 four oscillator "
+              "assumptions, not four measured crystals. Every run shares the same "
+              "residual |offset_est| floor (tens of ns) after estimated path-delay "
+              "compensation. Log scale. The envelope is set by the configured bound, "
+              "not by measured drift.")
 
-    # 32 — peak budget bars
+    # 32 — peak envelope bars
     image_slide(
-        prs, os.path.join(ASSETS, "fig_budget.png"), 33, kicker="Measured",
-        takeaway="Between sync messages, oscillator holdover \u2014 not PTP \u2014 "
-                 "decides whether your bound is 0.3 \u00b5s or 120 \u00b5s.",
-        notes="Peak-moment budget per class, as |offset| + drift. For the OCXO, "
-              "offset and drift are comparable (~0.3 us total); for the basic XO, "
-              "drift is essentially 100%. Same protocol, same network, the peak "
-              "bound runs from ~0.3 us to ~120 us from the crystal alone. This is "
-              "why oscillator stability must be part of the model and why the "
-              "kernel not exposing it (next section) is the real gap.")
+        prs, os.path.join(ASSETS, "fig_budget.png"), 33, kicker="Model sweep",
+        takeaway="Between syncs the configured drift bound \u2014 not PTP \u2014 sets "
+                 "whether the envelope is 0.3 \u00b5s or 120 \u00b5s.",
+        notes="Peak-moment envelope per assumption, as |offset_est| + age\u00d7D_max. "
+              "For the tight bound (OCXO assumption) the residual offset and the "
+              "attributed drift are comparable; for the loose bound (basic-XO "
+              "assumption) the attributed drift is essentially all of it. Same host, "
+              "same ptp4l, four configured D_max: the peak envelope runs ~0.3 us to "
+              "~120 us from the assumed drift bound alone. This is why the drift "
+              "bound must be a first-class, configured input \u2014 and why the kernel "
+              "not exposing a coherent clock-state (next section) is the real gap.")
 
     # ---- PART 7 ----
     section_slide(prs, "Part 7", "The full story: fast time + its uncertainty", 34)
@@ -935,34 +983,39 @@ def build(path):
          "PTP_SYS_OFFSET(_EXTENDED) \u2014 PHC \u2194 system",
          "/dev/ptpN \u2014 freq adjust, ext timestamps",
          "sync state lives only in ptp4l userspace"],
-        "Missing: a kernel PTP sync-state",
-        ["master_offset_ns \u2014 offset at last sync",
-         "ingress_time_ns \u2014 PHC time of sync (drift anchor)",
-         "max_drift_ppb \u2014 worst-case drift bound",
-         "gm_id + steps_removed \u2014 source & hop count",
-         "port state \u2014 optional (derivable)"],
+        "Missing: a coherent clock-state snapshot",
+        ["one atomic read at a defined epoch",
+         "master_offset_ns + ingress_time_ns (anchor)",
+         "max_drift_ppb \u2014 assumed frequency-error bound",
+         "gm_id + steps_removed (per-hop = policy, not a bound)",
+         "\u2192 enough metadata to derive U under stated assumptions"],
         38, kicker="Kernel limits",
         notes="Correction to the usual framing: the ptp4l management socket is not "
               "a kernel API \u2014 it lives in userspace. The kernel exposes raw "
               "ingredients (SO_TIMESTAMPING, PTP_SYS_OFFSET, /dev/ptpN) but no "
-              "disciplined PTP sync state, so today the only way to get the offset, "
-              "the sync ingress anchor, the drift bound and the grandmaster identity "
-              "is to talk to ptp4l out-of-band. The piece I want to add is exactly "
-              "that state, exposed by the kernel and built on the ptp-uncertainty "
-              "IPC segment: master_offset_ns, ingress_time_ns, max_drift_ppb, gm_id "
-              "and steps_removed \u2014 with port state optional since it is derivable "
-              "from the rest. Those few fields are what let any app compute a live "
-              "bound without linking a PTP stack. (The harder physical unknowns \u2014 "
-              "oscillator stability, calibration age \u2014 still need operator config.)")
+              "disciplined PTP sync state. And the sharper thesis: it's not merely "
+              "that the data isn't in one place \u2014 it's that Linux/PTP exposes no "
+              "*coherent* clock-state at a single observation epoch. Today "
+              "offsetFromMaster and ingress_time come from different datasets polled "
+              "independently, so we stitch non-atomic observations into one 'now'. "
+              "The primitive I'd add is one atomic snapshot at a defined epoch "
+              "(built on the ptp-uncertainty IPC segment): master_offset_ns, "
+              "ingress_time_ns, max_drift_ppb, gm_id, steps_removed \u2014 enough "
+              "metadata to derive an uncertainty envelope under stated assumptions. "
+              "Be honest about steps_removed: a static per-hop value is a crude "
+              "policy heuristic, not a physical bound \u2014 transparent vs boundary "
+              "clocks differ. And the harder physical unknowns (oscillator "
+              "stability, calibration age) still need operator config.")
 
     # ---- CLOSE ----
     content_slide(
         prs, "Takeaways",
         [("Timestamps are intervals \u2014 design systems around t \u00b1 U", 0),
-         ("PTP provides inputs, not a complete uncertainty model", 0),
-         ("Staleness / drift is the term most tools ignore \u2014 don\u2019t", 0),
-         ("Explicit bounds enable explicit correctness for ordering & compliance", 0),
-         ("The full story: fast access to the time and its associated uncertainty", 0)],
+         ("U is an envelope under stated assumptions, not a proven bound", 0),
+         ("Separate U_clock (daemon) from U_capture (application)", 0),
+         ("Staleness is an attributed drift bound \u2014 the term most tools ignore", 0),
+         ("Missing kernel primitive: a coherent clock-state at one epoch", 0),
+         ("The full story: fast access to the time and its uncertainty", 0)],
         39, kicker="Closing",
         notes="End on the bridge sentence: better profiles need better time \u2014 "
               "and better time needs error bars.")

@@ -25,7 +25,7 @@ Thank you all for being here.
 
 This talk is called *Making Time Uncertainty a First-Class Concept in Linux
 Timing*. And I want to start by admitting
-something: for most of my career, I treated time as a solved problem. You call
+something: many people treated time as a solved problem. You call
 `clock_gettime`, you get a number, the number is the truth. [PAUSE]
 
 Over the next forty minutes I want to convince you that that number is not a
@@ -190,18 +190,24 @@ it certain just ships a silent error.
 
 ### Slide 11 — What uncertainty is — and is not  (11:00)
 
-Let me be precise about what *U* is, because it's easy to over-claim.
+Let me be precise about what *U* is, because it's easy to over-claim — and this is
+where a hostile reviewer will push first.
 
-*U is:* a conservative bound on the clock error right now. It's derived from
-measurable synchronization state plus a few configured limits. And it's an
+*U is:* a *computed uncertainty envelope*, right now. It's derived from the
+synchronization state plus a few explicitly stated assumptions. And it's an
 explicit input to your application's logic.
 
 *U is not:* a statistical confidence interval — not unless you deliberately layer
-statistics on top. It's not a substitute for designing good clocks. And crucially,
-it is *not* zero just because PTP reports the port state as "SLAVE." [PAUSE]
+statistics on top. And, being honest, it is *not* a proven mathematical upper
+bound on the true clock error — because we deliberately omit some terms, like link
+asymmetry. And it is *not* zero just because PTP reports the port state as "SLAVE."
+[PAUSE]
 
-The spirit here is conservatism. We want a defensible upper bound we can stand
-behind, not an optimistic best guess.
+So I'm going to call it an *operational envelope under stated assumptions*, not a
+"conservative bound." The moment you name the assumptions — the frequency error is
+within some D-max, the asymmetry within some A-max, the offset-estimation error
+within some limit — the number becomes defensible. Hand-wave the assumptions and a
+reviewer is right to attack it.
 
 ---
 
@@ -254,28 +260,36 @@ Two come from the *source clock* itself, and they are different in kind. First,
 the grandmaster's *class* — its `clockClass` and `clockAccuracy`. We don't measure
 this; the grandmaster *advertises* it, and it gives us a bound on how good the
 source is. Second, the *offset from* that grandmaster — and this one we *do*
-measure, locally, from the t1–t4 timestamp exchange. That measured offset is the
-`|offset|` term that goes straight into the bound. One is a quality we're told; the
-other is an offset we compute — keep them separate. (And `stepsRemoved` is
-the hop count, the number of boundary clocks between the
-grandmaster, for which we may also want to assume some static value.)
+compute, locally, from the t1–t4 timestamp exchange. But be careful, because this
+is the first place a reviewer will attack: `offsetFromMaster` is an *estimate* of
+our bias, not a bound on it. A two-nanosecond offset does not mean the true error
+is under two nanoseconds. So it enters as the estimated offset *plus* its own
+estimation uncertainty — timestamp noise, delay variation, and asymmetry all live
+in that second term. One is a quality we're told; the other is an estimate we
+compute, with error bars of its own. (And `stepsRemoved` is just the hop count to
+the grandmaster — if we attribute error per hop, that's a crude *policy*, not a
+physical bound; a transparent clock and a boundary clock fail differently.)
 
-Two come from *our* oscillator: its free-run *drift* between sync messages, and,
-in the extreme, *holdover* — the drift that keeps accumulating when discipline is
-lost entirely.
+Two come from *our* oscillator, but say these carefully: the PHC is being
+frequency-disciplined by ptp4l, so between syncs it does *not* free-run at the raw
+crystal tolerance. What we bound is the *residual* frequency error — capped by a
+configured D-max — times the age since the last sync. And in the extreme,
+*holdover* — that same bound growing when discipline is lost entirely.
 
-Two are about *reading* the clock: the *read delay* — the latency of actually
-reading a PHC or calling `clock_gettime` — and the clock's *resolution*, the
-granularity of the tick itself.
+Two are about *reading* the clock: the clock's *resolution*, which enters as half
+a tick of quantization; and the *capture* of the event itself — where and how it
+was stamped — which, and this matters, is a *separate* uncertainty the application
+owns, not the daemon.
 
-And two live in the *network*: the delays *accumulated across every path element*
-— each transparent or boundary clock and every queue on the way — and *link
-asymmetry*, where the up and down directions differ. [PAUSE]
+And two live in the *network*: the delays accumulated across every path element,
+whose *estimated mean* PTP compensates — but the estimation error of that mean
+does not vanish; and *link asymmetry*, which PTP cannot see. Both fold into that
+offset-estimation term. [PAUSE]
 
-Watch the last column. Some of these we fold straight into the bound; PTP
-*compensates* the mean path delay for us; and one — link asymmetry — PTP simply
-cannot see, so it stays a conservative gap. Now let me pull out the ones that
-dominate.
+So watch that last column. It splits into two owners: U-clock, everything the
+daemon can bound; and U-capture, what the application knows about how it stamped
+the event. The total event uncertainty is the sum of the two. And none of it is a
+proof — it's an envelope under the assumptions we just named.
 
 ### Slide 15 — Layers 1–2: oscillator & PHC clock  (14:45)
 
@@ -283,27 +297,38 @@ Layer one, the oscillator. Its stability is measured in parts per billion, and
 it's sensitive to temperature — and left to free-run, it drifts.
 
 Layer two is the PHC clock the oscillator feeds — the hardware clock we actually
-read. Two things live here. First, `offsetFromMaster` — and I want to stress this
-is an *estimate* of our offset from the reference. Second, the
-clock's *resolution* — the granularity of a single tick, the smallest difference
-it can even represent. And reading it isn't free either; the read itself has a
-latency.
+read. Two things live here. First, `offsetFromMaster` — and I'll say it again
+because it's the crux — this is an *estimate* of our offset from the reference,
+and the estimate has its own uncertainty. Second, the clock's *resolution* — the
+granularity of a single tick, which enters as a half-tick of quantization, and I
+mean the *effective* granularity of the NIC clock, not just whatever `clock_getres`
+reports. And reading it isn't free either; the read itself has a latency.
 
 The servo *converges* toward zero offset. It never mathematically *reaches* zero.
 So PTP believes something about your clock — and that belief is an input to *U*,
 not a guarantee about reality.
 
-### Slide 16 — Layer 4: where was the timestamp taken?  (16:00)
+### Slide 16 — Layer 4: capture point — a separate uncertainty  (16:00)
 
-Now the capture point, because this one surprises people.
+Now the capture point, because this one surprises people — and because it's a
+place the model has to be careful.
 
-The same "event time" has wildly different error depending on where you stamped
-it. A hardware PHC timestamp in the NIC has the smallest error. A software
-`SO_TIMESTAMPING` stamp is larger — it's delayed by interrupt and softirq
-handling. And a plain `clock_gettime` in your application is the largest — it eats
-syscall overhead and scheduling jitter.
+First, three things that are easy to blur together. There's *clock uncertainty* —
+the envelope we've been building. There's *capture uncertainty* — where and how
+you stamped the event. And there's plain *observation latency*. They are not the
+same.
 
-This matters enormously for profiling. Your GPU, your NIC, and your CPU may each
+Here's the trap. A hardware PHC timestamp in the NIC has the smallest capture
+error. A software `SO_TIMESTAMPING` stamp is larger — interrupt and softirq delay.
+And `clock_gettime` in your app — people call it the "largest error," but be
+careful: the syscall latency does *not* make the returned time wrong. That value
+*is* the clock at the read point. It only becomes uncertainty when you claim an
+*earlier* event happened at that time — then the event-to-read gap is what counts.
+
+So capture uncertainty is a *separate* term — call it U-capture — that the
+application adds on top of the clock envelope. The daemon can't know how you
+stamped. And this matters enormously for profiling: your GPU, your NIC, and your
+CPU may each
 be stamping in a *different domain* — even when the cluster says everything is
 synchronized.
 
@@ -313,34 +338,44 @@ Two more layers, quickly.
 
 Layer three, the network. Every hop — each transparent or boundary clock, each
 switch queue — adds delay, and the more hops the sync crosses, the more of it
-accumulates. Now the subtlety that trips people up: PTP *measures* the mean path
-delay and *compensates* for it inside the offset — so the mean itself is not
-uncertainty; it's already corrected out. What's left is link *asymmetry*: when the
-up and down directions differ, on fabrics with asymmetric links and leaf-switch
-queueing, and it grows with hop count. That residual is a real source, but we
-don't get a clean measurement of it, so it stays out of the bound.
+accumulates. Now the subtlety that trips people up — and here I have to be more
+careful than the usual hand-wave. PTP measures and compensates the *estimated*
+mean path delay. The mean gets corrected out, yes — but the *estimation error* of
+that mean does not vanish. Delay variation, changing path conditions, a stale
+delay estimate, and above all link *asymmetry* — the up and down directions
+differing — all remain. So I won't say "path delay is gone." I'll say the
+estimated mean is compensated, and its residual estimation error, growing with hop
+count, folds into the offset-estimation term. PTP doesn't hand us a clean
+measurement of it.
 
-And layer five, the kernel path: Linux actually exposes a lot of useful data here
-— but not as one tidy package. `PTP_SYS_OFFSET` cross-timestamps the PHC against
-the system clock. `SO_TIMESTAMPING` gives you ingress and egress timestamps. The
-`ptp4l` management API gives you offset, delay, and ingress time. The ingredients
-are all there. Remember that — I'll come back to what's *missing* at the end.
+And layer five, the kernel path: Linux exposes useful *ingredients* here —
+`PTP_SYS_OFFSET` cross-timestamps the PHC against the system clock, and
+`SO_TIMESTAMPING` gives you ingress and egress timestamps. But notice what's *not*
+a kernel API: the disciplined sync-state itself. That lives only in `ptp4l` in
+userspace, and there's no coherent snapshot of it. Remember that — it's exactly
+what's *missing*, and I'll come back to it at the end.
 
 ### Slide 18 — The layer everyone forgets: staleness  (18:30)
 
 And now the layer that almost every tool forgets. [PAUSE]
 
-Between PTP updates, the clock drifts. That's it. That's the whole idea, and it's
-the one people skip.
+Between syncs, the clock's frequency isn't perfectly known — so our *bound* on the
+error grows. And I want to phrase this precisely, because it's the second thing a
+reviewer will catch. The PHC is being frequency-disciplined; between syncs it does
+*not* free-run at the raw crystal tolerance — the last correction stays
+programmed. So this isn't "the oscillator drifts 100 microseconds." The honest
+statement is: the *residual* frequency error is bounded by a configured D-max, and
+our uncertainty grows as that bound times the age since the last sync.
 
-The drift uncertainty is elapsed time times the maximum drift rate. Put in a
-number: 100 parts per million times one second is **100 microseconds**. [PAUSE]
+Put in a number: a D-max of 100 parts per million times one second is **100
+microseconds**. [PAUSE]
 
-Think about what that means. You can have a *perfect* offset at the instant a sync
-message arrives — and a moment later that perfect point has already grown into an
-interval. Staleness turns a point measurement into a *growing* interval.
+Think about what that means. You can have a *perfect* offset estimate at the
+instant a sync arrives — and a moment later that point has already grown into an
+interval. Staleness turns a point estimate into a *growing* envelope — an
+*attributed* bound, not a measurement of drift.
 
-Most dashboards show you the offset. Very few show you that interval widening
+Most dashboards show you the offset. Very few show you that envelope widening
 since the last correction. That gap — that's exactly what the implementation
 later in this talk makes explicit.
 
@@ -363,7 +398,10 @@ Linux extension — gives the sync ingress time and the grandmaster identity. An
 `PORT_HWCLOCK_NP` optionally gives the PHC index.
 
 What PTP does *not* answer is "what is my application-level timestamp error bar?"
-That's the part we build on top.
+That's the part we build on top. And notice one thing that becomes important
+later: these are four *separate* datasets, polled independently over the
+management interface. There is no single call that hands you a coherent clock-state
+at one instant. Hold that thought.
 
 ### Slide 21 — Ingress time is the drift anchor  (22:30)
 
@@ -372,45 +410,46 @@ And this is how we build it. The key is that ingress time.
 `TIME_STATUS_NP` tells us *when the last sync event actually arrived*, in PHC
 time. That timestamp is our *anchor*.
 
-Then the drift term is simple: take the time now, subtract the
-time at that ingress anchor, and multiply by a worst-case drift bound in parts per
-billion. [PAUSE]
+Then the drift term is simple: take the time now, subtract the time at that ingress
+anchor, and multiply by the configured drift bound, D-max. That gives an
+*attributed* bound on residual frequency error since the anchor. [PAUSE]
 
-That's the mechanism that makes staleness concrete. Uncertainty grows between sync
-messages — even when the offset number on the screen is sitting perfectly flat.
+But let me flag the honest weakness here, because a careful reviewer will. The
+offset comes from `CURRENT_DATA_SET`; the ingress time comes from `TIME_STATUS_NP`.
+Those are two different datasets, and the servo state may have moved between them.
+I'm treating two non-atomic observations as if they describe one synchronization
+event at one epoch. It's a reasonable approximation — but it's an approximation.
+And honestly, that snapshot-coherence gap is one of the strongest arguments for
+the kernel API I'll propose at the end: Linux doesn't expose a coherent
+clock-state at a common observation epoch.
 
-### Slide 22 — The formula  (23:45)
+### Slide 22 — The model, stated with its assumptions  (23:45)
 
-So here is the whole model on one slide.
+So here is the whole model on one slide — and I've written it the way I'd want to
+defend it, not the way that sounds cleanest.
 
-**Total uncertainty is the sum of four residual terms — the offset, the drift, the clock
-resolution, and the capture-point error.** [PAUSE]
+Start at the top: the *event* uncertainty splits into two owners. **U-clock**,
+which the daemon and library provide, and **U-capture**, which the application
+provides. The total is their sum. Keep them separate — the daemon has no idea how
+your application stamped its event.
 
-The first one is the absolute value of the last offset calculated by the servo.
+Now U-clock itself. First term: the estimated offset — `offset_est` — the servo's
+latest estimate of our bias, left uncorrected. Second, and this is the term people
+drop: `U_est`, the *uncertainty of that estimate* — timestamp noise, delay
+variation, residual path-delay-estimation error, asymmetry. An offset estimate is
+not a bound on the offset; the bound needs this second term. Third: the drift —
+age since the anchor times D-max, the attributed residual-frequency bound. And
+fourth: half a tick of clock resolution — a quantization term.
 
-The second and biggest is *drift* — the staleness we just built, growing since the
-last sync. The third is *clock resolution* — you can never place an event more
-finely than a single tick, so that granularity is a hard floor under the bound.
-And the fourth is the *capture-point error* — where the timestamp was actually
-taken: a hardware stamp in the NIC is tight, a software `SO_TIMESTAMPING` stamp or
-a plain `clock_gettime` in your app is looser.
+And below the line, the assumptions, written out: the frequency error is within
+D-max, the asymmetry within A-max, the offset-estimation error within its own
+limit. [PAUSE]
 
-The one thing we stay deliberately conservative about is path
-*asymmetry* — the up and down directions differing — which PTP doesn't hand us, so
-we leave it out and treat it as a known gap.
-
-We can also assign some static value per hop and use that as a measure of additional
-error for each node, the PTP packet had to go between the GM and us.
-
-A worked number: 12 nanoseconds offset, 50 nanoseconds of drift,
-8 nanoseconds of resolution, and about 40 nanoseconds of
-capture-point error — call it a hundred ten bound. That
-total is the half-width of the interval you attach to your timestamp.
-
-I want to be honest about what this is: it's a *practical* model. It is not a full
-Allan-deviation analysis of your oscillator. It's a conservative, computable bound
-built from the most basic data we actually have — and that's exactly what makes it
-usable in production.
+I want to be honest about what this is. It is *not* a proven upper bound on true
+clock error — I've left terms out and I've made assumptions. It's a *computed
+uncertainty envelope under stated assumptions*. Name the assumptions, and it's
+defensible. That's the strongest honest claim I can make, and it's the one I'll
+stand behind.
 
 ### Slide 23 — Sync status is a prerequisite, not a proof  (25:15)
 
@@ -466,17 +505,21 @@ index. You point it at the socket and it configures itself.
 
 ### Slide 27 — Client API  (29:45)
 
-The client side is four calls.
+You open a handle. Then `ptp_unc_get` gives you the clock uncertainty *at now*.
 
-You open a handle. Then `ptp_unc_get` gives you the uncertainty *at now*.
+And here's the important framing: what the daemon returns —
+`total_uncertainty_ns` — is **U-clock**, the clock-error envelope. It is *not* the
+whole story for an event. The application composes the event uncertainty itself:
+U-event equals U-clock plus U-capture, where U-capture is whatever the app knows
+about how *it* stamped the event — a NIC hardware timestamp, an `SO_TIMESTAMPING`
+stamp, a GPU counter converted to PHC. The daemon can't know that, so it doesn't
+pretend to. It gives you the clock half; you add the capture half.
 
-Out of that you get `total_uncertainty_ns`, the `drift_ns` component broken out,
-whether you're synchronized, whether `ptp4l` is connected, and `age_ns`. [PAUSE]
-
-One clarification that trips people up: `age_ns` is the freshness of the *daemon's
-snapshot* — how long since the daemon last updated shared memory. That is *not*
-the same as the drift term, which is measured from the sync ingress anchor. Two
-different clocks of staleness; keep them separate.
+You also get whether you're synchronized, whether `ptp4l` is connected, and
+`age_ns`. [PAUSE] One clarification that trips people up: `age_ns` is the freshness
+of the *daemon's snapshot* — how long since it last updated shared memory. That is
+*not* the drift-anchor age, which is measured from the sync ingress. Two different
+clocks of staleness; keep them separate.
 
 ### Slide 28 — Behavior under failure = explicit correctness  (31:00)
 
@@ -525,70 +568,67 @@ telling you what's missing. We come back to it in the last section.
 
 ---
 
-## Block 7 — Measured on real oscillators  (33:00 – 37:00)
+## Block 7 — Model behavior across oscillator bounds  (33:00 – 37:00)
 
-### Slide 30 — Part 6: Measured on real oscillators  (33:00)
+### Slide 30 — Part 6: Model behavior across oscillator bounds  (33:00)
 
-Part six. Everything so far has been a model. Let me show you the model running
-against real hardware — because this is the part that turns "staleness" from a
-slide into a number you can see move.
+Part six. And let me be scrupulously honest about what these next plots are,
+because it would be easy to oversell them. I am **not** putting four different
+oscillators on the bench. It's the same host, the same `ptp4l`, the same network.
+The only thing I change between runs is the daemon's configured drift bound,
+D-max — one model parameter. So what you're about to see is the *model's* output
+under four oscillator *assumptions*, not four measured crystals. I'd rather you
+attack the model than catch me claiming a measurement I didn't make.
 
-Everything from here is captured with the `watch_uncertainty` tool logging the
-daemon against a live `ptp4l`. Same host, same network. The only thing I change
-between runs is the worst-case drift bound — which is exactly how you'd model a
-better or worse oscillator.
-
-### Slide 31 — Staleness in action  (33:30)
+### Slide 31 — The bound growing between syncs  (33:30)
 
 *(Show the sawtooth plot.)*
 
-Here it is. This is a real capture. That dashed line sitting almost on the axis is
-the offset floor — just tens of nanoseconds.
-[PAUSE]
+Here it is. That dashed line near the axis is the residual offset floor — tens of
+nanoseconds — what's left after the estimated path delay is compensated. [PAUSE]
 
-Now watch the blue line. Every second, a sync message arrives, and the
-uncertainty snaps back down to essentially zero. Then, immediately, it starts
-climbing again — pure drift, because the clock is drifting and no correction has
-arrived yet. Climb, reset, climb, reset. [PAUSE]
+Now watch the blue line. Every second a sync arrives and the *bound* snaps back
+down. Then it climbs again. And I want to be precise about what that climb is: it
+is the uncertainty **attributed to potential drift** — age times D-max. It is
+*not* a measurement of the clock physically drifting; the PHC is disciplined, its
+frequency correction is still programmed. The plot demonstrates the *growth of the
+bound*, not observed oscillator drift. Climb, reset, climb, reset. [PAUSE]
 
-That sawtooth *is* staleness. Remember slide eighteen, where I claimed a perfect
-offset becomes a growing interval a moment later? There it is, measured. The
-interval is widest right before the next sync — and most tools would only ever
-show you the offset, which down here looks like nothing.
+That sawtooth is the staleness term from slide eighteen, made visible. The
+envelope is widest right before the next sync — and most tools would only show you
+the offset, which down here looks like nothing.
 
-### Slide 32 — Same PTP, four oscillators  (34:45)
+### Slide 32 — Same PTP state, four drift bounds  (34:45)
 
-Now the same run, four times, one per oscillator class — and I've put it on a log
-scale, because the spread is enormous.
+Now the same run, four times — one per configured drift bound — on a log scale,
+because the spread is enormous.
 
-Every one of these lines rides on the same tiny offset floor — tens of
-nanoseconds — because the path delay is compensated away. Same offset, same
-network. The only difference is the drift bound: an OCXO-class part down at
-100 parts per billion, a TCXO at 1 ppm, a quality crystal at 10 ppm, and a basic
-crystal at 100 ppm. [PAUSE]
+Every line rides on the same residual offset floor, tens of nanoseconds, because
+the estimated path delay is compensated. Same PTP state, same host. The only thing
+that differs is the assumed D-max: an OCXO assumption at 100 parts per billion, a
+TCXO at 1 ppm, a quality crystal at 10 ppm, and a basic crystal at 100 ppm. [PAUSE]
 
-Look at the separation. The OCXO barely leaves the floor — its line stays down in
-the tens of nanoseconds. The basic crystal swings up past 100 microseconds between
-sync messages. Same protocol. Same second. The envelope of your uncertainty is set
-by the oscillator, not by PTP.
+Look at the separation. The tight bound barely leaves the floor; the loose bound
+swings up past 100 microseconds between syncs. Same protocol, same second. The
+envelope is set by the *configured bound* — the assumption you feed the model —
+not by anything PTP measured.
 
-### Slide 33 — The budget, at its worst  (35:45)
+### Slide 33 — The envelope, at its worst  (35:45)
 
-One more view — the worst-case moment in each run, broken into its two parts: the
-residual offset in gray, and the drift term in color.
+One more view — the worst-case moment for each assumption, split into its two
+parts: the residual offset estimate in gray, and the attributed drift in color.
 
-For the OCXO, offset and drift are comparable — the whole budget is under three
-hundred nanoseconds either way. But move to a quality crystal and drift is
-*ninety-nine percent* of the budget; on the basic crystal it's essentially all
-drift. [PAUSE]
+For the tight bound, the residual offset and the attributed drift are comparable —
+the whole envelope is a few hundred nanoseconds. Loosen the bound and the drift
+term takes over: ninety-nine percent, then essentially all of it. [PAUSE]
 
-Same network, same daemon, same formula — and the peak bound runs from about a
-third of a microsecond to a hundred and twenty microseconds, decided entirely by
-the crystal on the board. This is the single most important empirical point in the
-talk: between sync messages, oscillator holdover — not the protocol — decides
-whether your bound is a fraction of a microsecond or over a hundred. Hold that
-thought for the very last section, because it's exactly the number the kernel
-won't give you.
+Same network, same daemon, same model — and the peak envelope runs from about a
+third of a microsecond to a hundred and twenty microseconds, decided by the
+configured drift bound alone. That's the point, and I'll state it carefully: the
+*assumed* residual-frequency bound, not measured holdover, is what dominates
+between syncs. Which is exactly why that bound needs to be a first-class,
+explicitly-configured input — and why the kernel not exposing a coherent
+clock-state to hang it on is the real gap. Hold that for the last section.
 
 ---
 
@@ -651,19 +691,25 @@ whole point — it isn't a kernel API at all. It lives in *userspace*. So the on
 thing we actually need — the disciplined PTP sync state — exists only inside
 ptp4l, and the only way to get it today is to talk to that daemon out-of-band.
 
-That's the gap I want to close. The right column is the piece I'd add: a small,
-standard sync-state that the *kernel* exposes, built on the very structure this
-daemon already publishes. It carries `master_offset_ns` — the offset at the last
-sync; `ingress_time_ns` — the PHC timestamp of that sync, which is our drift
-anchor; `max_drift_ppb` — the worst-case drift bound; and the grandmaster identity
-with `steps_removed`. Port state is optional — you can reason it out of the
-others. [PAUSE]
+That's the gap I want to close — and the critique of the model earlier actually
+sharpens it. The problem isn't merely that the data lives in userspace. It's that
+Linux and PTP expose no *coherent* clock-state at a single observation epoch.
+Remember slide twenty-one: offset comes from one dataset, ingress from another,
+polled independently — I had to stitch non-atomic observations into one "now." So
+the primitive I'd add isn't just "expose max_drift_ppb." It's *one atomic snapshot
+at a defined epoch*, built on the structure this daemon already publishes:
+`master_offset_ns` and `ingress_time_ns` together as the anchor; `max_drift_ppb`
+as the assumed frequency-error bound; the grandmaster identity and `steps_removed`
+— though I'll be honest that per-hop error is a crude policy, not a physical bound,
+since a transparent clock and a boundary clock fail differently. Enough metadata,
+at one epoch, to derive an uncertainty envelope under stated assumptions. [PAUSE]
 
-With just those few fields exposed by the kernel, any application could compute a
-live uncertainty bound without linking a PTP stack or scraping a daemon. The
-harder physical unknowns — oscillator stability, calibration age — still need
-operator config; I'm not going to oversell that. But the sync-state itself is a
-small, concrete thing to build, and it's the missing recipe.
+That's a much harder thesis to attack than "give me a drift number." With a
+coherent snapshot, any application could compute a live envelope without linking a
+PTP stack or scraping a daemon. The harder physical unknowns — oscillator
+stability, calibration age — still need operator config; I won't oversell that.
+But a coherent clock-state at a defined epoch is a small, concrete thing to build,
+and it's the missing recipe.
 
 ---
 
@@ -671,22 +717,26 @@ small, concrete thing to build, and it's the missing recipe.
 
 ### Slide 39 — Takeaways  (40:30)
 
-Five things to take with you.
+Six things to take with you.
 
 One: timestamps are intervals. Design your systems around *t plus-or-minus U*.
 
-Two: PTP provides the inputs, but it is not a complete uncertainty model on its
-own.
+Two, and this is the honest one: U is a *computed envelope under stated
+assumptions*, not a proven upper bound. Name the assumptions and it's defensible.
 
-Three: staleness — drift since the last sync — is the term most tools ignore.
-Don't ignore it.
+Three: separate the two owners — U-clock, which the daemon bounds, and U-capture,
+which the application knows. The event uncertainty is their sum.
 
-Four: explicit bounds enable explicit correctness — for ordering *and* for
-compliance.
+Four: staleness is an *attributed* drift bound — age times a configured
+frequency-error limit, not measured oscillator drift. It's the term most tools
+ignore; don't.
 
-And five, the one that ties the two talks together: fast access gives you the
-time cheaply, and uncertainty tells you how far to trust it — fast access to the
-time *and* its associated uncertainty.
+Five: the real missing kernel primitive isn't a drift number — it's a *coherent
+clock-state at one observation epoch*, with enough metadata to derive an envelope.
+
+And six, the one that ties the two talks together: fast access gives you the time
+cheaply, and uncertainty tells you how far to trust it — fast access to the time
+*and* its associated uncertainty.
 
 ### Slide 40 — Questions  (41:15)
 
